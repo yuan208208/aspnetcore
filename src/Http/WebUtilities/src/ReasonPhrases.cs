@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Collections.Generic;
-
 namespace Microsoft.AspNetCore.WebUtilities;
 
 /// <summary>
@@ -68,6 +66,7 @@ public static class ReasonPhrases
         { 429, "Too Many Requests" },
         { 431, "Request Header Fields Too Large" },
         { 451, "Unavailable For Legal Reasons" },
+        { 499, "Client Closed Request" },
 
         { 500, "Internal Server Error" },
         { 501, "Not Implemented" },

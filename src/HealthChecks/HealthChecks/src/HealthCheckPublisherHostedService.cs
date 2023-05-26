@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Shared;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Internal;
 using Microsoft.Extensions.Logging;
@@ -30,25 +31,10 @@ internal sealed partial class HealthCheckPublisherHostedService : IHostedService
         ILogger<HealthCheckPublisherHostedService> logger,
         IEnumerable<IHealthCheckPublisher> publishers)
     {
-        if (healthCheckService == null)
-        {
-            throw new ArgumentNullException(nameof(healthCheckService));
-        }
-
-        if (options == null)
-        {
-            throw new ArgumentNullException(nameof(options));
-        }
-
-        if (logger == null)
-        {
-            throw new ArgumentNullException(nameof(logger));
-        }
-
-        if (publishers == null)
-        {
-            throw new ArgumentNullException(nameof(publishers));
-        }
+        ArgumentNullThrowHelper.ThrowIfNull(healthCheckService);
+        ArgumentNullThrowHelper.ThrowIfNull(options);
+        ArgumentNullThrowHelper.ThrowIfNull(logger);
+        ArgumentNullThrowHelper.ThrowIfNull(publishers);
 
         _healthCheckService = healthCheckService;
         _options = options;
@@ -95,14 +81,13 @@ internal sealed partial class HealthCheckPublisherHostedService : IHostedService
         _timer?.Dispose();
         _timer = null;
 
-
         return Task.CompletedTask;
     }
 
     // Yes, async void. We need to be async. We need to be void. We handle the exceptions in RunAsync
     private async void Timer_Tick(object? state)
     {
-        await RunAsync();
+        await RunAsync().ConfigureAwait(false);
     }
 
     // Internal for testing
@@ -126,7 +111,7 @@ internal sealed partial class HealthCheckPublisherHostedService : IHostedService
             _runTokenSource = cancellation;
             cancellation.CancelAfter(timeout);
 
-            await RunAsyncCore(cancellation.Token);
+            await RunAsyncCore(cancellation.Token).ConfigureAwait(false);
 
             Logger.HealthCheckPublisherProcessingEnd(_logger, duration.GetElapsedTime());
         }
@@ -152,7 +137,7 @@ internal sealed partial class HealthCheckPublisherHostedService : IHostedService
         await Task.Yield();
 
         // The health checks service does it's own logging, and doesn't throw exceptions.
-        var report = await _healthCheckService.CheckHealthAsync(_options.Value.Predicate, cancellationToken);
+        var report = await _healthCheckService.CheckHealthAsync(_options.Value.Predicate, cancellationToken).ConfigureAwait(false);
 
         var publishers = _publishers;
         var tasks = new Task[publishers.Length];
@@ -161,7 +146,7 @@ internal sealed partial class HealthCheckPublisherHostedService : IHostedService
             tasks[i] = RunPublisherAsync(publishers[i], report, cancellationToken);
         }
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
     private async Task RunPublisherAsync(IHealthCheckPublisher publisher, HealthReport report, CancellationToken cancellationToken)
@@ -172,7 +157,7 @@ internal sealed partial class HealthCheckPublisherHostedService : IHostedService
         {
             Logger.HealthCheckPublisherBegin(_logger, publisher);
 
-            await publisher.PublishAsync(report, cancellationToken);
+            await publisher.PublishAsync(report, cancellationToken).ConfigureAwait(false);
             Logger.HealthCheckPublisherEnd(_logger, publisher, duration.GetElapsedTime());
         }
         catch (OperationCanceledException) when (IsStopping)

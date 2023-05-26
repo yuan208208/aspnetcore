@@ -1,13 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Microsoft.AspNetCore.Components.Reflection;
 using Microsoft.AspNetCore.Components.Rendering;
+using static Microsoft.AspNetCore.Internal.LinkerFlags;
 
 namespace Microsoft.AspNetCore.Components;
 
@@ -61,23 +60,24 @@ internal readonly struct CascadingParameterState
 
     private static ICascadingValueComponent? GetMatchingCascadingValueSupplier(in ReflectedCascadingParameterInfo info, ComponentState componentState)
     {
+        var candidate = componentState;
         do
         {
-            if (componentState.Component is ICascadingValueComponent candidateSupplier
+            if (candidate.Component is ICascadingValueComponent candidateSupplier
                 && candidateSupplier.CanSupplyValue(info.ValueType, info.SupplierValueName))
             {
                 return candidateSupplier;
             }
 
-            componentState = componentState.ParentComponentState;
-        } while (componentState != null);
+            candidate = candidate.ParentComponentState;
+        } while (candidate != null);
 
         // No match
         return null;
     }
 
     private static ReflectedCascadingParameterInfo[] GetReflectedCascadingParameterInfos(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.NonPublicProperties)] Type componentType)
+        [DynamicallyAccessedMembers(Component)] Type componentType)
     {
         if (!_cachedInfos.TryGetValue(componentType, out var infos))
         {
@@ -89,7 +89,7 @@ internal readonly struct CascadingParameterState
     }
 
     private static ReflectedCascadingParameterInfo[] CreateReflectedCascadingParameterInfos(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.NonPublicProperties)] Type componentType)
+        [DynamicallyAccessedMembers(Component)] Type componentType)
     {
         List<ReflectedCascadingParameterInfo>? result = null;
         var candidateProps = ComponentProperties.GetCandidateBindableProperties(componentType);

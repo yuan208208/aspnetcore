@@ -3,8 +3,6 @@
 
 #nullable enable
 
-using System;
-using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Mvc.ViewFeatures;
 using Microsoft.Extensions.Options;
@@ -29,10 +27,7 @@ public class CompositeViewEngine : ICompositeViewEngine
     /// <inheritdoc />
     public ViewEngineResult FindView(ActionContext context, string viewName, bool isMainPage)
     {
-        if (context == null)
-        {
-            throw new ArgumentNullException(nameof(context));
-        }
+        ArgumentNullException.ThrowIfNull(context);
 
         if (string.IsNullOrEmpty(viewName))
         {

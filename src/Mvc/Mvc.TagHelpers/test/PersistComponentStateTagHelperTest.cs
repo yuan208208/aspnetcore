@@ -1,23 +1,24 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Text.Encodings.Web;
-using System.Threading.Tasks;
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Endpoints;
 using Microsoft.AspNetCore.Components.Infrastructure;
 using Microsoft.AspNetCore.Components.Rendering;
+using Microsoft.AspNetCore.Components.Routing;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Html;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.AspNetCore.Mvc.ViewFeatures;
+using Microsoft.AspNetCore.Mvc.ViewFeatures.Buffers;
 using Microsoft.AspNetCore.Razor.TagHelpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Mvc.TagHelpers;
 
@@ -80,7 +81,7 @@ public class PersistComponentStateTagHelperTest
             ViewContext = GetViewContext()
         };
 
-        ComponentRenderer.UpdateSaveStateRenderMode(tagHelper.ViewContext, RenderMode.WebAssemblyPrerendered);
+        EndpointHtmlRenderer.UpdateSaveStateRenderMode(tagHelper.ViewContext.HttpContext, Components.Web.RenderMode.WebAssembly);
 
         var context = GetTagHelperContext();
         var output = GetTagHelperOutput();
@@ -128,7 +129,7 @@ public class PersistComponentStateTagHelperTest
             ViewContext = GetViewContext()
         };
 
-        ComponentRenderer.UpdateSaveStateRenderMode(tagHelper.ViewContext, RenderMode.ServerPrerendered);
+        EndpointHtmlRenderer.UpdateSaveStateRenderMode(tagHelper.ViewContext.HttpContext, Components.Web.RenderMode.Server);
 
         var context = GetTagHelperContext();
         var output = GetTagHelperOutput();
@@ -153,8 +154,8 @@ public class PersistComponentStateTagHelperTest
             ViewContext = GetViewContext()
         };
 
-        ComponentRenderer.UpdateSaveStateRenderMode(tagHelper.ViewContext, RenderMode.ServerPrerendered);
-        ComponentRenderer.UpdateSaveStateRenderMode(tagHelper.ViewContext, RenderMode.WebAssemblyPrerendered);
+        EndpointHtmlRenderer.UpdateSaveStateRenderMode(tagHelper.ViewContext.HttpContext, Components.Web.RenderMode.Server);
+        EndpointHtmlRenderer.UpdateSaveStateRenderMode(tagHelper.ViewContext.HttpContext, Components.Web.RenderMode.WebAssembly);
 
         var context = GetTagHelperContext();
         var output = GetTagHelperOutput();
@@ -182,25 +183,17 @@ public class PersistComponentStateTagHelperTest
 
     private ViewContext GetViewContext()
     {
-        var htmlContent = new HtmlContentBuilder().AppendHtml("Hello world");
-        var renderer = Mock.Of<IComponentRenderer>(c =>
-            c.RenderComponentAsync(It.IsAny<ViewContext>(), It.IsAny<Type>(), It.IsAny<RenderMode>(), It.IsAny<object>()) == Task.FromResult<IHtmlContent>(htmlContent));
-
         var httpContext = new DefaultHttpContext
         {
             RequestServices = new ServiceCollection()
-                .AddSingleton(renderer)
-                .AddSingleton(new ComponentStatePersistenceManager(NullLogger<ComponentStatePersistenceManager>.Instance))
-                .AddSingleton<HtmlRenderer>()
-                .AddSingleton(_ephemeralProvider)
-                .AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance)
-                .AddSingleton(HtmlEncoder.Default)
+                .AddScoped(_ => Mock.Of<IDataProtectionProvider>(
+                    x => x.CreateProtector(It.IsAny<string>()) == _protector))
+                .AddLogging()
+                .AddScoped<ComponentStatePersistenceManager>()
+                .AddScoped<IComponentPrerenderer, EndpointHtmlRenderer>()
                 .BuildServiceProvider(),
         };
 
-        return new ViewContext
-        {
-            HttpContext = httpContext,
-        };
+        return new ViewContext { HttpContext = httpContext };
     }
 }

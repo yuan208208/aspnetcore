@@ -1,14 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
@@ -18,6 +14,8 @@ namespace Microsoft.AspNetCore.Session;
 /// <summary>
 /// An <see cref="ISession"/> backed by an <see cref="IDistributedCache"/>.
 /// </summary>
+[DebuggerDisplay("Count = {System.Linq.Enumerable.Count(Keys)}")]
+[DebuggerTypeProxy(typeof(DistributedSessionDebugView))]
 public class DistributedSession : ISession
 {
     private const int IdByteCount = 16;
@@ -65,25 +63,15 @@ public class DistributedSession : ISession
         ILoggerFactory loggerFactory,
         bool isNewSessionKey)
     {
-        if (cache == null)
-        {
-            throw new ArgumentNullException(nameof(cache));
-        }
+        ArgumentNullException.ThrowIfNull(cache);
 
         if (string.IsNullOrEmpty(sessionKey))
         {
             throw new ArgumentException(Resources.ArgumentCannotBeNullOrEmpty, nameof(sessionKey));
         }
 
-        if (tryEstablishSession == null)
-        {
-            throw new ArgumentNullException(nameof(tryEstablishSession));
-        }
-
-        if (loggerFactory == null)
-        {
-            throw new ArgumentNullException(nameof(loggerFactory));
-        }
+        ArgumentNullException.ThrowIfNull(tryEstablishSession);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
 
         _cache = cache;
         _sessionKey = sessionKey;
@@ -155,10 +143,7 @@ public class DistributedSession : ISession
     /// <inheritdoc />
     public void Set(string key, byte[] value)
     {
-        if (value == null)
-        {
-            throw new ArgumentNullException(nameof(value));
-        }
+        ArgumentNullException.ThrowIfNull(value);
 
         if (IsAvailable)
         {
@@ -267,12 +252,6 @@ public class DistributedSession : ISession
     /// <inheritdoc />
     public async Task CommitAsync(CancellationToken cancellationToken = default)
     {
-        if (!IsAvailable)
-        {
-            _logger.SessionNotAvailable();
-            return;
-        }
-
         using (var timeout = new CancellationTokenSource(_ioTimeout))
         {
             var cts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
@@ -457,5 +436,14 @@ public class DistributedSession : ISession
             total += read;
         }
         return output;
+    }
+
+    private sealed class DistributedSessionDebugView(DistributedSession session)
+    {
+        private readonly DistributedSession _session = session;
+
+        public bool IsAvailable => _session.IsAvailable;
+        public string Id => _session.Id;
+        public IEnumerable<string> Keys => new List<string>(_session.Keys);
     }
 }

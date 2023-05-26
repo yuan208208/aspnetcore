@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Hosting.Server;
 
@@ -15,6 +13,6 @@ internal interface IRequestProcessor
     void HandleRequestHeadersTimeout();
     void HandleReadDataRateTimeout();
     void OnInputOrOutputCompleted();
-    void Tick(DateTimeOffset now);
+    void Tick(long timestamp);
     void Abort(ConnectionAbortedException ex);
 }

@@ -34,6 +34,7 @@ internal static class TemplatePackageInstaller
             "Microsoft.DotNet.Web.ProjectTemplates.5.0",
             "Microsoft.DotNet.Web.ProjectTemplates.6.0",
             "Microsoft.DotNet.Web.ProjectTemplates.7.0",
+            "Microsoft.DotNet.Web.ProjectTemplates.8.0",
             "Microsoft.DotNet.Web.Spa.ProjectTemplates.2.1",
             "Microsoft.DotNet.Web.Spa.ProjectTemplates.2.2",
             "Microsoft.DotNet.Web.Spa.ProjectTemplates.3.0",
@@ -41,6 +42,7 @@ internal static class TemplatePackageInstaller
             "Microsoft.DotNet.Web.Spa.ProjectTemplates.5.0",
             "Microsoft.DotNet.Web.Spa.ProjectTemplates.6.0",
             "Microsoft.DotNet.Web.Spa.ProjectTemplates.7.0",
+            "Microsoft.DotNet.Web.Spa.ProjectTemplates.8.0",
             "Microsoft.DotNet.Web.Spa.ProjectTemplates",
             "Microsoft.AspNetCore.Blazor.Templates",
         };
@@ -53,24 +55,14 @@ internal static class TemplatePackageInstaller
 
     public static async Task EnsureTemplatingEngineInitializedAsync(ITestOutputHelper output)
     {
-        await ProcessLock.DotNetNewLock.WaitAsync();
-        try
+        if (!_haveReinstalledTemplatePackages)
         {
-            output.WriteLine("Acquired DotNetNewLock");
-            if (!_haveReinstalledTemplatePackages)
+            if (Directory.Exists(CustomHivePath))
             {
-                if (Directory.Exists(CustomHivePath))
-                {
-                    Directory.Delete(CustomHivePath, recursive: true);
-                }
-                await InstallTemplatePackages(output);
-                _haveReinstalledTemplatePackages = true;
+                Directory.Delete(CustomHivePath, recursive: true);
             }
-        }
-        finally
-        {
-            ProcessLock.DotNetNewLock.Release();
-            output.WriteLine("Released DotNetNewLock");
+            await InstallTemplatePackages(output);
+            _haveReinstalledTemplatePackages = true;
         }
     }
 
@@ -107,6 +99,11 @@ internal static class TemplatePackageInstaller
             .Where(p => _templatePackages.Any(t => Path.GetFileName(p).StartsWith(t, StringComparison.OrdinalIgnoreCase)))
             .ToArray();
 
+        if (builtPackages.Length == 0)
+        {
+            throw new InvalidOperationException($"Failed to find required templates in {packagesDir}. Please ensure the *Templates*.nupkg have been built.");
+        }
+
         Assert.Equal(4, builtPackages.Length);
 
         await VerifyCannotFindTemplateAsync(output, "web");
@@ -120,7 +117,7 @@ internal static class TemplatePackageInstaller
         foreach (var packagePath in builtPackages)
         {
             output.WriteLine($"Installing templates package {packagePath}...");
-            var result = await RunDotNetNew(output, $"--install \"{packagePath}\"");
+            var result = await RunDotNetNew(output, $"install \"{packagePath}\"");
             Assert.True(result.ExitCode == 0, result.GetFormattedOutput());
         }
 
@@ -149,7 +146,7 @@ internal static class TemplatePackageInstaller
         {
             var proc = await RunDotNetNew(output, $"\"{templateName}\"");
 
-            if (!proc.Error.Contains("No templates found matching:"))
+            if (!proc.Error.Contains("No templates or subcommands found matching:"))
             {
                 throw new InvalidOperationException($"Failed to uninstall previous templates. The template '{templateName}' could still be found.");
             }

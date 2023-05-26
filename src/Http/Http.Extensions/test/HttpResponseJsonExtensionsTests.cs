@@ -1,15 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading;
-using System.Threading.Tasks;
-using Xunit;
+using System.Text.Json.Serialization.Metadata;
+using Microsoft.AspNetCore.Testing;
 
 #nullable enable
 
@@ -409,7 +406,7 @@ public class HttpResponseJsonExtensionsTests
     }
 
     [Fact]
-    public async Task WriteAsJsonAsyncGeneric_AsyncEnumerableG_UserPassedTokenThrows()
+    public async Task WriteAsJsonAsyncGeneric_AsyncEnumerable_UserPassedTokenThrows()
     {
         // Arrange
         var body = new MemoryStream();
@@ -440,6 +437,48 @@ public class HttpResponseJsonExtensionsTests
                 yield return i;
             }
         }
+    }
+
+    [Fact]
+    public async Task WriteAsJsonAsyncGeneric_WithJsonTypeInfo_JsonResponse()
+    {
+        // Arrange
+        var body = new MemoryStream();
+        var context = new DefaultHttpContext();
+        context.Response.Body = body;
+
+        // Act
+        var options = new JsonSerializerOptions();
+        options.TypeInfoResolver = new DefaultJsonTypeInfoResolver();
+
+        await context.Response.WriteAsJsonAsync(new int[] { 1, 2, 3 }, (JsonTypeInfo<int[]>)options.GetTypeInfo(typeof(int[])));
+
+        // Assert
+        Assert.Equal(JsonConstants.JsonContentTypeWithCharset, context.Response.ContentType);
+
+        var data = Encoding.UTF8.GetString(body.ToArray());
+        Assert.Equal("[1,2,3]", data);
+    }
+
+    [Fact]
+    public async Task WriteAsJsonAsync_NullValue_WithJsonTypeInfo_JsonResponse()
+    {
+        // Arrange
+        var body = new MemoryStream();
+        var context = new DefaultHttpContext();
+        context.Response.Body = body;
+
+        // Act
+        var options = new JsonSerializerOptions();
+        options.TypeInfoResolver = new DefaultJsonTypeInfoResolver();
+
+        await context.Response.WriteAsJsonAsync(value : null, options.GetTypeInfo(typeof(Uri)));
+
+        // Assert
+        Assert.Equal(JsonConstants.JsonContentTypeWithCharset, context.Response.ContentType);
+
+        var data = Encoding.UTF8.GetString(body.ToArray());
+        Assert.Equal("null", data);
     }
 
     public class TestObject
@@ -489,8 +528,8 @@ public class HttpResponseJsonExtensionsTests
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            var tcs = new TaskCompletionSource<int>();
-            cancellationToken.Register(s => ((TaskCompletionSource<int>)s!).SetCanceled(), tcs);
+            var tcs = new TaskCompletionSource();
+            cancellationToken.Register(s => ((TaskCompletionSource)s!).SetCanceled(), tcs);
             return new ValueTask(tcs.Task);
         }
     }

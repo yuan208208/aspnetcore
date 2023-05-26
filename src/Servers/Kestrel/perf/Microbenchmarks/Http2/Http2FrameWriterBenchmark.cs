@@ -32,13 +32,13 @@ public class Http2FrameWriterBenchmark
         var serviceContext = TestContextFactory.CreateServiceContext(
             serverOptions: new KestrelServerOptions(),
             httpParser: new HttpParser<Http1ParsingHandler>(),
-            dateHeaderValueManager: new DateHeaderValueManager());
+            dateHeaderValueManager: new DateHeaderValueManager(TimeProvider.System));
 
         _frameWriter = new Http2FrameWriter(
             new NullPipeWriter(),
             connectionContext: null,
             http2Connection: null,
-            new OutputFlowControl(new SingleAwaitableProvider(), initialWindowSize: int.MaxValue),
+            maxStreamsPerConnection: 1,
             timeoutControl: null,
             minResponseDataRate: null,
             "TestConnectionId",
@@ -54,7 +54,7 @@ public class Http2FrameWriterBenchmark
     [Benchmark]
     public void WriteResponseHeaders()
     {
-        _frameWriter.WriteResponseHeaders(0, 200, Http2HeadersFrameFlags.END_HEADERS, _responseHeaders);
+        _frameWriter.WriteResponseHeaders(streamId: 0, 200, Http2HeadersFrameFlags.END_STREAM, _responseHeaders);
     }
 
     [GlobalCleanup]

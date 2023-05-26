@@ -1,11 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text.Json;
-using System.Threading.Tasks;
 using BasicTestApp;
 using BasicTestApp.FormsTest;
 using Microsoft.AspNetCore.Components.E2ETest.Infrastructure;
@@ -13,7 +8,6 @@ using Microsoft.AspNetCore.Components.E2ETest.Infrastructure.ServerFixtures;
 using Microsoft.AspNetCore.E2ETesting;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Support.UI;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace Microsoft.AspNetCore.Components.E2ETest.Tests;
@@ -81,11 +75,34 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
     }
 
     [Fact]
+    public void EditFormWorksWithDataAnnotationsValidatorAndDI()
+    {
+        var appElement = Browser.MountTestComponent<ValidationComponentDI>();
+        var form = appElement.FindElement(By.TagName("form"));
+        var userNameInput = appElement.FindElement(By.ClassName("the-quiz")).FindElement(By.TagName("input"));
+        var submitButton = appElement.FindElement(By.CssSelector("button[type=submit]"));
+        var messagesAccessor = CreateValidationMessagesAccessor(appElement);
+
+        userNameInput.SendKeys("Bacon\t");
+        submitButton.Click();
+        //We can only have this errormessage when DI is working
+        Browser.Equal(new[] { "You should not put that in a salad!" }, messagesAccessor);
+
+        userNameInput.Clear();
+        userNameInput.SendKeys("Watermelon\t");
+        submitButton.Click();
+        Browser.Empty(messagesAccessor);
+    }
+
+    [Fact]
     public void InputTextInteractsWithEditContext()
     {
         var appElement = MountTypicalValidationComponent();
         var nameInput = appElement.FindElement(By.ClassName("name")).FindElement(By.TagName("input"));
         var messagesAccessor = CreateValidationMessagesAccessor(appElement);
+        var summaryMessagesAccessor = CreateValidationMessagesAccessor(
+            appElement.FindElement(By.ClassName("all-errors")),
+            ".validation-errors > .validation-message"); // Shows that the default class name for ValidationSummary is validation-errors
 
         // InputText emits unmatched attributes
         Browser.Equal("Enter your name", () => nameInput.GetAttribute("placeholder"));
@@ -101,6 +118,7 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
         Browser.Equal("modified invalid", () => nameInput.GetAttribute("class"));
         EnsureAttributeValue(nameInput, "aria-invalid", "true");
         Browser.Equal(new[] { "That name is too long" }, messagesAccessor);
+        Browser.True(() => summaryMessagesAccessor().Contains("That name is too long"));
 
         // Can become valid
         nameInput.Clear();
@@ -108,6 +126,7 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
         Browser.Equal("modified valid", () => nameInput.GetAttribute("class"));
         EnsureAttributeNotRendered(nameInput, "aria-invalid");
         Browser.Empty(messagesAccessor);
+        Browser.False(() => summaryMessagesAccessor().Contains("That name is too long"));
     }
 
     [Fact]
@@ -135,6 +154,7 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
         ageInput.SendKeys("\t");
         Browser.Equal("modified invalid", () => ageInput.GetAttribute("class"));
         Browser.Equal(new[] { "The AgeInYears field must be a number." }, messagesAccessor);
+        Browser.Equal("", () => ageInput.GetDomProperty("value")); // We can display 'empty' even though it's not representable within the bound property
 
         // Zero is within the allowed range
         ageInput.SendKeys("0\t");
@@ -341,37 +361,36 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
         var appElement = MountTypicalValidationComponent();
         var messagesAccessor = CreateValidationMessagesAccessor(appElement);
 
+        // By capturing the inputradio elements just once up front, we're implicitly showing
+        // that they are retained as their values change
+        var unknownAirlineInput = FindAirlineInputs().First(i => string.Equals("Unknown", i.GetAttribute("value")));
+        var bestAirlineInput = FindAirlineInputs().First(i => string.Equals("BestAirline", i.GetAttribute("value")));
+
         // Validate selected inputs
-        Browser.True(() => FindUnknownAirlineInput().Selected);
-        Browser.False(() => FindBestAirlineInput().Selected);
+        Browser.True(() => unknownAirlineInput.Selected);
+        Browser.False(() => bestAirlineInput.Selected);
 
         // InputRadio emits additional attributes
-        Browser.True(() => FindUnknownAirlineInput().GetAttribute("extra").Equals("additional"));
+        Browser.True(() => unknownAirlineInput.GetAttribute("extra").Equals("additional"));
 
         // Validates on edit
-        Browser.Equal("valid", () => FindUnknownAirlineInput().GetAttribute("class"));
-        Browser.Equal("valid", () => FindBestAirlineInput().GetAttribute("class"));
+        Browser.Equal("valid", () => unknownAirlineInput.GetAttribute("class"));
+        Browser.Equal("valid", () => bestAirlineInput.GetAttribute("class"));
 
-        FindBestAirlineInput().Click();
+        bestAirlineInput.Click();
 
-        Browser.Equal("modified valid", () => FindUnknownAirlineInput().GetAttribute("class"));
-        Browser.Equal("modified valid", () => FindBestAirlineInput().GetAttribute("class"));
+        Browser.Equal("modified valid", () => unknownAirlineInput.GetAttribute("class"));
+        Browser.Equal("modified valid", () => bestAirlineInput.GetAttribute("class"));
 
         // Can become invalid
-        FindUnknownAirlineInput().Click();
+        unknownAirlineInput.Click();
 
-        Browser.Equal("modified invalid", () => FindUnknownAirlineInput().GetAttribute("class"));
-        Browser.Equal("modified invalid", () => FindBestAirlineInput().GetAttribute("class"));
+        Browser.Equal("modified invalid", () => unknownAirlineInput.GetAttribute("class"));
+        Browser.Equal("modified invalid", () => bestAirlineInput.GetAttribute("class"));
         Browser.Equal(new[] { "Pick a valid airline." }, messagesAccessor);
 
         IReadOnlyCollection<IWebElement> FindAirlineInputs()
             => appElement.FindElement(By.ClassName("airline")).FindElements(By.TagName("input"));
-
-        IWebElement FindUnknownAirlineInput()
-            => FindAirlineInputs().First(i => string.Equals("Unknown", i.GetAttribute("value")));
-
-        IWebElement FindBestAirlineInput()
-            => FindAirlineInputs().First(i => string.Equals("BestAirline", i.GetAttribute("value")));
     }
 
     [Fact]
@@ -488,7 +507,7 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
         var appElement = MountTypicalValidationComponent();
         var emailContainer = appElement.FindElement(By.ClassName("email"));
         var emailInput = emailContainer.FindElement(By.TagName("input"));
-        var emailMessagesAccessor = CreateValidationMessagesAccessor(emailContainer);
+        var emailMessagesAccessor = CreateValidationMessagesAccessor(emailContainer, ".special-email-css-class-override");
         var submitButton = appElement.FindElement(By.CssSelector("button[type=submit]"));
 
         // Doesn't show messages for other fields
@@ -518,7 +537,6 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
         var confirmEmailContainer = appElement.FindElement(By.ClassName("confirm-email"));
         var confirmInput = confirmEmailContainer.FindElement(By.TagName("input"));
         var confirmEmailValidationMessage = CreateValidationMessagesAccessor(confirmEmailContainer);
-        CreateValidationMessagesAccessor(emailContainer);
         var submitButton = appElement.FindElement(By.CssSelector("button[type=submit]"));
 
         // Updates on edit
@@ -715,6 +733,186 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
     }
 
     [Fact]
+    public void InputTextWorksWithMutatingSetter()
+    {
+        // Repro for https://github.com/dotnet/aspnetcore/issues/40097
+        // The input changes its value to "24:00:00" whenever "24h" is entered, and we need to show
+        // that we don't lose such changes
+
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = appElement.FindElement(By.Id("inputtext-with-mutating-setter"));
+
+        // Observe that the value can be mutated by the setter, and this shows up in the DOM
+        input.SendKeys("24h\t");
+        Browser.Equal("24:00:00", () => input.GetDomProperty("value"));
+
+        // If the user then re-enters the same value, even though the setter doesn't cause any
+        // change to the .NET model (because it's re-mutated to the same value again), the diff
+        // still knows to update the DOM
+        input.SendKeys(Keys.Control + "a"); // select all content
+        input.SendKeys("24h\t");            // replace content with new value
+        Browser.Equal("24:00:00", () => input.GetDomProperty("value"));
+    }
+
+    [Fact]
+    public void InputTextAreaWorksWithMutatingSetter()
+    {
+        // Repro for https://github.com/dotnet/aspnetcore/issues/40097
+        // The input changes its value to "24:00:00" whenever "24h" is entered, and we need to show
+        // that we don't lose such changes
+
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = appElement.FindElement(By.Id("inputtextarea-with-mutating-setter"));
+
+        // Observe that the value can be mutated by the setter, and this shows up in the DOM
+        input.SendKeys("24h\t");
+        Browser.Equal("24:00:00", () => input.GetDomProperty("value"));
+
+        // If the user then re-enters the same value, even though the setter doesn't cause any
+        // change to the .NET model (because it's re-mutated to the same value again), the diff
+        // still knows to update the DOM
+        input.SendKeys(Keys.Control + "a"); // select all content
+        input.SendKeys("24h\t");            // replace content with new value
+        Browser.Equal("24:00:00", () => input.GetDomProperty("value"));
+    }
+
+    [Fact]
+    public void InputCheckboxWorksWithMutatingSetter()
+    {
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = appElement.FindElement(By.Id("inputcheckbox-with-mutating-setter"));
+
+        // Observe that the value can be mutated by the setter, and this shows up in the DOM
+        Browser.Equal("False", () => input.GetDomProperty("checked"));
+        input.Click();
+        Browser.Equal("False", () => input.GetDomProperty("checked")); // i.e., it was reverted back to false
+    }
+
+    [Fact]
+    public void InputDateWorksWithMutatingSetter()
+    {
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = appElement.FindElement(By.Id("inputdate-with-mutating-setter"));
+
+        // Observe that the value can be mutated by the setter, and this shows up in the DOM
+        input.SendKeys("01012000\t");
+        Browser.Equal("2222-02-02", () => input.GetDomProperty("value"));
+
+        // If the user then re-enters the same value, even though the setter doesn't cause any
+        // change to the .NET model (because it's re-mutated to the same value again), the diff
+        // still knows to update the DOM
+        input.SendKeys(Keys.Control + "a"); // select all content
+        input.SendKeys("01012000\t");
+        Browser.Equal("2222-02-02", () => input.GetDomProperty("value"));
+    }
+
+    [Fact]
+    public void InputNumberWorksWithMutatingSetter()
+    {
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = appElement.FindElement(By.Id("inputnumber-with-mutating-setter"));
+
+        // Observe that the value can be mutated by the setter, and this shows up in the DOM
+        input.SendKeys("123\t");
+        Browser.Equal("100", () => input.GetDomProperty("value"));
+
+        // If the user then re-enters the same value, even though the setter doesn't cause any
+        // change to the .NET model (because it's re-mutated to the same value again), the diff
+        // still knows to update the DOM
+        input.SendKeys(Keys.Control + "a"); // select all content
+        input.SendKeys("123\t");
+        Browser.Equal("100", () => input.GetDomProperty("value"));
+    }
+
+    [Fact]
+    public void InputRadioGroupWorksWithMutatingSetter()
+    {
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var monday = appElement.FindElement(By.Id("inputradiogroup-with-mutating-setter-monday"));
+        var tuesday = appElement.FindElement(By.Id("inputradiogroup-with-mutating-setter-tuesday"));
+
+        // Observe that the value can be mutated by the setter, and this shows up in the DOM
+        tuesday.Click();
+        Browser.Equal("True", () => monday.GetDomProperty("checked"));
+        Browser.Equal("False", () => tuesday.GetDomProperty("checked"));
+
+        // If the user then re-enters the same value, even though the setter doesn't cause any
+        // change to the .NET model (because it's re-mutated to the same value again), the diff
+        // still knows to update the DOM
+        tuesday.Click();
+        Browser.Equal("True", () => monday.GetDomProperty("checked"));
+        Browser.Equal("False", () => tuesday.GetDomProperty("checked"));
+    }
+
+    [Fact]
+    public void InputSelectWorksWithMutatingSetter()
+    {
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = new SelectElement(appElement.FindElement(By.Id("inputselect-with-mutating-setter")));
+
+        // Observe that the value can be mutated by the setter, and this shows up in the DOM
+        input.SelectByValue("Wednesday");
+        Browser.Equal("Wednesday", () => input.SelectedOption.Text);
+        input.SelectByValue("Tuesday");
+        Browser.Equal("Monday", () => input.SelectedOption.Text);
+
+        // If the user then re-enters the same value, even though the setter doesn't cause any
+        // change to the .NET model (because it's re-mutated to the same value again), the diff
+        // still knows to update the DOM
+        input.SelectByValue("Tuesday");
+        Browser.Equal("Monday", () => input.SelectedOption.Text);
+    }
+
+    [Fact]
+    public void InputSelectMultipleWorksWithMutatingSetter()
+    {
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = new SelectElement(appElement.FindElement(By.Id("inputselectmultiple-with-mutating-setter")));
+
+        // Observe that the value can be mutated by the setter, and this shows up in the DOM
+        input.SelectByValue("Wednesday");
+        Browser.Equal("Wednesday", () => input.AllSelectedOptions.Single().Text);
+        input.SelectByValue("Tuesday");
+        Browser.Equal("Monday+Wednesday", () => string.Join('+', input.AllSelectedOptions.Select(e => e.Text)));
+
+        // If the user then re-enters the same value, even though the setter doesn't cause any
+        // change to the .NET model (because it's re-mutated to the same value again), the diff
+        // still knows to update the DOM
+        input.SelectByValue("Tuesday");
+        Browser.Equal("Monday+Wednesday", () => string.Join('+', input.AllSelectedOptions.Select(e => e.Text)));
+    }
+
+    [Fact]
+    public void InputWithCustomParserPreservesInvalidValueWhenParsingFails()
+    {
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = appElement.FindElement(By.Id("input-with-custom-parser"));
+
+        // should not replace the input contents with last known component value (null)
+        input.SendKeys("INVALID\t");
+        Browser.Equal("INVALID", () => input.GetDomProperty("value"));
+        Browser.Equal("modified invalid", () => input.GetAttribute("class"));
+    }
+
+    [Fact]
+    public void InputWithCustomParserCanMutateValueDuringParsing()
+    {
+        var appElement = Browser.MountTestComponent<InputsWithMutatingSetters>();
+        var input = appElement.FindElement(By.Id("input-with-custom-parser"));
+
+        // Observe that the value can be mutated by the parser, and this shows up in the DOM
+        input.SendKeys("24h\t");
+        Browser.Equal("24:00:00", () => input.GetDomProperty("value"));
+
+        // If the user then re-enters the same value, even though the parser doesn't cause any
+        // change to the .NET model (because it's re-mutated to the same value again), the diff
+        // still knows to update the DOM
+        input.SendKeys(Keys.Control + "a"); // select all content
+        input.SendKeys("24h\t");            // replace content with new value
+        Browser.Equal("24:00:00", () => input.GetDomProperty("value"));
+    }
+
+    [Fact]
     public void InputSelectWorksWithoutEditContext()
     {
         var appElement = Browser.MountTestComponent<InputsWithoutEditForm>();
@@ -755,9 +953,46 @@ public class FormsTest : ServerTestBase<ToggleExecutionModeServerFixture<Program
             => appElement.FindElement(By.ClassName("airlines")).FindElements(By.TagName("input"));
     }
 
-    private Func<string[]> CreateValidationMessagesAccessor(IWebElement appElement)
+    [Fact]
+    public void CanHaveModelLevelValidationErrors()
     {
-        return () => appElement.FindElements(By.ClassName("validation-message"))
+        var appElement = Browser.MountTestComponent<ModelLevelValidationComponent>();
+        var isCatCheckbox = appElement.FindElement(By.ClassName("cattiness")).FindElement(By.TagName("input"));
+        var ageInput = appElement.FindElement(By.ClassName("age")).FindElement(By.TagName("input"));
+        var submitButton = appElement.FindElement(By.CssSelector("button[type=submit]"));
+        var modelMessagesAccessor = CreateValidationMessagesAccessor(
+            appElement.FindElement(By.ClassName("model-errors")),
+            "ul.model-summary-custom-class > .validation-message"); // This shows we can override the ul's CSS class
+        var allMessagesAccessor = CreateValidationMessagesAccessor(
+            appElement.FindElement(By.ClassName("all-errors")));
+
+        // Cause a property-level validation error
+        ageInput.Clear();
+        ageInput.SendKeys("-1");
+        submitButton.Click();
+        Browser.Collection(allMessagesAccessor, x => Assert.Equal("Under-zeros should not be filling out forms", x));
+        Browser.Empty(modelMessagesAccessor);
+
+        // Cause a model-level validation error
+        ageInput.Clear();
+        ageInput.SendKeys("10");
+        submitButton.Click();
+        Browser.Collection(allMessagesAccessor, x => Assert.Equal("Sorry, you're not old enough as a non-cat", x));
+        Browser.Collection(modelMessagesAccessor, x => Assert.Equal("Sorry, you're not old enough as a non-cat", x));
+
+        // Become valid
+        isCatCheckbox.Click();
+        submitButton.Click();
+        Browser.Empty(allMessagesAccessor);
+        Browser.Empty(modelMessagesAccessor);
+
+        Func<string[]> logEntries = () => appElement.FindElements(By.ClassName("submission-log-entry")).Select(x => x.Text).ToArray();
+        Browser.Collection(logEntries, x => Assert.Equal("OnValidSubmit", x));
+    }
+
+    private Func<string[]> CreateValidationMessagesAccessor(IWebElement appElement, string messageSelector = ".validation-message")
+    {
+        return () => appElement.FindElements(By.CssSelector(messageSelector))
             .Select(x => x.Text)
             .OrderBy(x => x)
             .ToArray();

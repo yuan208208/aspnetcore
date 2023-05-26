@@ -1,8 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
@@ -15,6 +15,7 @@ namespace Microsoft.AspNetCore.Http;
 /// Provides correct escaping for Path and PathBase values when needed to reconstruct a request or redirect URI string
 /// </summary>
 [TypeConverter(typeof(PathStringConverter))]
+[DebuggerDisplay("{Value}")]
 public readonly struct PathString : IEquatable<PathString>
 {
     internal const int StackAllocThreshold = 128;
@@ -194,10 +195,7 @@ public readonly struct PathString : IEquatable<PathString>
     /// <returns>The resulting PathString</returns>
     public static PathString FromUriComponent(Uri uri)
     {
-        if (uri == null)
-        {
-            throw new ArgumentNullException(nameof(uri));
-        }
+        ArgumentNullException.ThrowIfNull(uri);
         var uriComponent = uri.GetComponents(UriComponents.Path, UriFormat.UriEscaped);
         Span<char> pathBuffer = uriComponent.Length < StackAllocThreshold ? stackalloc char[StackAllocThreshold] : new char[uriComponent.Length + 1];
         pathBuffer[0] = '/';
@@ -485,10 +483,7 @@ internal sealed class PathStringConverter : TypeConverter
     public override object? ConvertTo(ITypeDescriptorContext? context,
        CultureInfo? culture, object? value, Type destinationType)
     {
-        if (destinationType == null)
-        {
-            throw new ArgumentNullException(nameof(destinationType));
-        }
+        ArgumentNullException.ThrowIfNull(destinationType);
 
         return destinationType == typeof(string)
             ? value?.ToString() ?? string.Empty

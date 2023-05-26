@@ -4,11 +4,7 @@
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using System.Threading;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 
 namespace Microsoft.AspNetCore.Mvc.Api.Analyzers;
@@ -17,7 +13,7 @@ public static class ActualApiResponseMetadataFactory
 {
     /// <summary>
     /// This method looks at individual return statments and attempts to parse the status code and the return type.
-    /// Given a <see cref="MethodDeclarationSyntax"/> for an action, this method inspects return statements in the body.
+    /// Given an <see cref="IMethodBodyBaseOperation"/> for an action, this method inspects return statements in the body.
     /// If the returned type is not assignable from IActionResult, it assumes that an "object" value is being returned. e.g. return new Person();
     /// For return statements returning an action result, it attempts to infer the status code and return type. Helper methods in controller,
     /// values set in initializer and new-ing up an IActionResult instance are supported.
@@ -25,7 +21,6 @@ public static class ActualApiResponseMetadataFactory
     internal static bool TryGetActualResponseMetadata(
         in ApiControllerSymbolCache symbolCache,
         IMethodBodyBaseOperation methodBody,
-        CancellationToken cancellationToken,
         out IList<ActualApiResponseMetadata> actualResponseMetadata)
     {
         var localActualResponseMetadata = new List<ActualApiResponseMetadata>();
@@ -63,6 +58,8 @@ public static class ActualApiResponseMetadataFactory
         IReturnOperation returnOperation)
     {
         var returnedValue = returnOperation.ReturnedValue;
+        var defaultStatusCodeAttributeSymbol = symbolCache.DefaultStatusCodeAttribute;
+
         if (returnedValue is null || returnedValue is IInvalidOperation)
         {
             return null;
@@ -84,8 +81,17 @@ public static class ActualApiResponseMetadataFactory
         }
 
         var defaultStatusCodeAttribute = statementReturnType
-            .GetAttributes(symbolCache.DefaultStatusCodeAttribute, inherit: true)
+            .GetAttributes(defaultStatusCodeAttributeSymbol, inherit: true)
             .FirstOrDefault();
+
+        // If the type is not annotated with a default status code, then examine
+        // the attributes on any invoked method returning the type.
+        if (defaultStatusCodeAttribute is null && returnedValue is IInvocationOperation invocationOperation)
+        {
+            defaultStatusCodeAttribute = invocationOperation.TargetMethod
+                .GetAttributes(defaultStatusCodeAttributeSymbol)
+                .FirstOrDefault();
+        }
 
         var statusCode = GetDefaultStatusCode(defaultStatusCodeAttribute);
 
@@ -112,7 +118,6 @@ public static class ActualApiResponseMetadataFactory
                     // Property assignments override constructor assigned values and defaults.
                     if (creation.Initializer is not null)
                     {
-
                         result = InspectInitializers(symbolCache, creation.Initializer);
                         statusCode = result.statusCode ?? statusCode;
                         returnType = result.returnType ?? returnType;
@@ -120,7 +125,6 @@ public static class ActualApiResponseMetadataFactory
                     break;
                 }
         }
-
 
         if (statusCode == null)
         {
@@ -137,7 +141,7 @@ public static class ActualApiResponseMetadataFactory
         int? statusCode = null;
         ITypeSymbol? typeSymbol = null;
 
-        foreach (var child in initializer.Children)
+        foreach (var child in initializer.Initializers)
         {
             if (child is not IAssignmentOperation assignmentOperation ||
                 assignmentOperation.Target is not IPropertyReferenceOperation propertyReference)
@@ -186,7 +190,7 @@ public static class ActualApiResponseMetadataFactory
             {
                 var operation = argument.Value;
 
-                if (operation is IConversionOperation conversionOperation)
+                while (operation is IConversionOperation conversionOperation)
                 {
                     // new BadRequest((object)MyDataType);
                     operation = conversionOperation.Operand;
@@ -203,37 +207,18 @@ public static class ActualApiResponseMetadataFactory
         IOperation operation,
         out int statusCode)
     {
-        if (operation is IConversionOperation conversion)
+        while (operation is IConversionOperation conversion)
         {
-            // Could be an implicit conversation from int -> int?
+            // For cases where one can write 'return StatusCode((int)(object)Constant)'
             operation = conversion.Operand;
         }
 
         if (operation.ConstantValue is { HasValue: true } constant)
         {
-            // Covers the 'return StatusCode(200)' case.
+            // Covers the 'return StatusCode(Constant)' case.
+            // Constant can be literal, field reference, or local reference.
             statusCode = (int)constant.Value;
             return true;
-        }
-
-        if (operation is IMemberReferenceOperation memberReference)
-        {
-            if (memberReference.Member is IFieldSymbol field && field.HasConstantValue && field.ConstantValue is int constantStatusCode)
-            {
-                // Covers the 'return StatusCode(StatusCodes.Status200OK)' case.
-                // It also covers the 'return StatusCode(StatusCode)' case, where 'StatusCode' is a constant field.
-                statusCode = constantStatusCode;
-                return true;
-            }
-        }
-        else if (operation is ILocalReferenceOperation localReference)
-        {
-            if (localReference.ConstantValue is { HasValue: true } localConstant)
-            {
-                // Covers the 'return StatusCode(statusCode)' case, where 'statusCode' is a local constant.
-                statusCode = (int)localConstant.Value;
-                return true;
-            }
         }
 
         statusCode = 0;
@@ -307,12 +292,10 @@ public static class ActualApiResponseMetadataFactory
                     return true;
                 }
 
-
                 parent = parent.Parent;
             }
 
             return false;
         }
     }
-
 }

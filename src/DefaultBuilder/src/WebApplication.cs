@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -27,8 +28,8 @@ public sealed class WebApplication : IHost, IApplicationBuilder, IEndpointRouteB
     internal WebApplication(IHost host)
     {
         _host = host;
-        ApplicationBuilder = new ApplicationBuilder(host.Services);
-        Logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger(Environment.ApplicationName);
+        ApplicationBuilder = new ApplicationBuilder(host.Services, ServerFeatures);
+        Logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger(Environment.ApplicationName ?? nameof(WebApplication));
 
         Properties[GlobalEndpointRouteBuilderKey] = this;
     }
@@ -61,8 +62,7 @@ public sealed class WebApplication : IHost, IApplicationBuilder, IEndpointRouteB
     /// <summary>
     /// The list of URLs that the HTTP server is bound to.
     /// </summary>
-    public ICollection<string> Urls => ServerFeatures.Get<IServerAddressesFeature>()?.Addresses ??
-        throw new InvalidOperationException($"{nameof(IServerAddressesFeature)} could not be found.");
+    public ICollection<string> Urls => ServerFeatures.GetRequiredFeature<IServerAddressesFeature>().Addresses;
 
     IServiceProvider IApplicationBuilder.ApplicationServices
     {
@@ -86,7 +86,7 @@ public sealed class WebApplication : IHost, IApplicationBuilder, IEndpointRouteB
     /// <summary>
     /// Initializes a new instance of the <see cref="WebApplication"/> class with preconfigured defaults.
     /// </summary>
-    /// <param name="args">Command line arguments</param>
+    /// <param name="args">The command line arguments.</param>
     /// <returns>The <see cref="WebApplication"/>.</returns>
     public static WebApplication Create(string[]? args = null) =>
         new WebApplicationBuilder(new() { Args = args }).Build();
@@ -99,12 +99,27 @@ public sealed class WebApplication : IHost, IApplicationBuilder, IEndpointRouteB
         new(new());
 
     /// <summary>
+    /// Initializes a new instance of the <see cref="WebApplicationBuilder"/> class with minimal defaults.
+    /// </summary>
+    /// <returns>The <see cref="WebApplicationBuilder"/>.</returns>
+    public static WebApplicationBuilder CreateSlimBuilder() =>
+        new(new(), slim: true);
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="WebApplicationBuilder"/> class with preconfigured defaults.
     /// </summary>
-    /// <param name="args">Command line arguments</param>
+    /// <param name="args">The command line arguments.</param>
     /// <returns>The <see cref="WebApplicationBuilder"/>.</returns>
     public static WebApplicationBuilder CreateBuilder(string[] args) =>
         new(new() { Args = args });
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="WebApplicationBuilder"/> class with minimal defaults.
+    /// </summary>
+    /// <param name="args">The command line arguments.</param>
+    /// <returns>The <see cref="WebApplicationBuilder"/>.</returns>
+    public static WebApplicationBuilder CreateSlimBuilder(string[] args) =>
+        new(new() { Args = args }, slim: true);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="WebApplicationBuilder"/> class with preconfigured defaults.
@@ -113,6 +128,14 @@ public sealed class WebApplication : IHost, IApplicationBuilder, IEndpointRouteB
     /// <returns>The <see cref="WebApplicationBuilder"/>.</returns>
     public static WebApplicationBuilder CreateBuilder(WebApplicationOptions options) =>
         new(options);
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="WebApplicationBuilder"/> class with minimal defaults.
+    /// </summary>
+    /// <param name="options">The <see cref="WebApplicationOptions"/> to configure the <see cref="WebApplicationBuilder"/>.</param>
+    /// <returns>The <see cref="WebApplicationBuilder"/>.</returns>
+    public static WebApplicationBuilder CreateSlimBuilder(WebApplicationOptions options) =>
+        new(options, slim: true);
 
     /// <summary>
     /// Start the application.
@@ -143,7 +166,7 @@ public sealed class WebApplication : IHost, IApplicationBuilder, IEndpointRouteB
     /// <returns>
     /// A <see cref="Task"/> that represents the entire runtime of the <see cref="WebApplication"/> from startup to shutdown.
     /// </returns>
-    public Task RunAsync(string? url = null)
+    public Task RunAsync([StringSyntax(StringSyntaxAttribute.Uri)] string? url = null)
     {
         Listen(url);
         return HostingAbstractionsHostExtensions.RunAsync(this);
@@ -153,7 +176,7 @@ public sealed class WebApplication : IHost, IApplicationBuilder, IEndpointRouteB
     /// Runs an application and block the calling thread until host shutdown.
     /// </summary>
     /// <param name="url">The URL to listen to if the server hasn't been configured directly.</param>
-    public void Run(string? url = null)
+    public void Run([StringSyntax(StringSyntaxAttribute.Uri)] string? url = null)
     {
         Listen(url);
         HostingAbstractionsHostExtensions.Run(this);

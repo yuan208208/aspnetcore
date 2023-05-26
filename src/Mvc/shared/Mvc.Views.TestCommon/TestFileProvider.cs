@@ -1,9 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.IO;
 using Microsoft.Extensions.Primitives;
 
 namespace Microsoft.Extensions.FileProviders;
@@ -73,9 +70,9 @@ public class TestFileProvider : IFileProvider
 
     public virtual IFileInfo GetFileInfo(string subpath)
     {
-        if (_lookup.ContainsKey(subpath))
+        if (_lookup.TryGetValue(subpath, out var fileInfo))
         {
-            return _lookup[subpath];
+            return fileInfo;
         }
         else
         {
@@ -124,7 +121,7 @@ public class TestFileProvider : IFileProvider
         return filePath;
     }
 
-    private class NotFoundFileInfo : IFileInfo
+    private sealed class NotFoundFileInfo : IFileInfo
     {
         public bool Exists
         {

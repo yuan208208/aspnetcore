@@ -1,22 +1,17 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Dynamic;
 
 namespace Microsoft.AspNetCore.Mvc.ViewFeatures;
 
-internal class DynamicViewData : DynamicObject
+internal sealed class DynamicViewData : DynamicObject
 {
     private readonly Func<ViewDataDictionary> _viewDataFunc;
 
     public DynamicViewData(Func<ViewDataDictionary> viewDataFunc)
     {
-        if (viewDataFunc == null)
-        {
-            throw new ArgumentNullException(nameof(viewDataFunc));
-        }
+        ArgumentNullException.ThrowIfNull(viewDataFunc);
 
         _viewDataFunc = viewDataFunc;
     }
@@ -45,10 +40,7 @@ internal class DynamicViewData : DynamicObject
 
     public override bool TryGetMember(GetMemberBinder binder, out object result)
     {
-        if (binder == null)
-        {
-            throw new ArgumentNullException(nameof(binder));
-        }
+        ArgumentNullException.ThrowIfNull(binder);
 
         result = ViewData[binder.Name];
 
@@ -59,10 +51,7 @@ internal class DynamicViewData : DynamicObject
 
     public override bool TrySetMember(SetMemberBinder binder, object value)
     {
-        if (binder == null)
-        {
-            throw new ArgumentNullException(nameof(binder));
-        }
+        ArgumentNullException.ThrowIfNull(binder);
 
         ViewData[binder.Name] = value;
 

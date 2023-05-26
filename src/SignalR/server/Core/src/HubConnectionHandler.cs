@@ -1,14 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Threading.Channels;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
-using Microsoft.AspNetCore.Internal;
 using Microsoft.AspNetCore.SignalR.Internal;
 using Microsoft.AspNetCore.SignalR.Protocol;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,7 +30,7 @@ public class HubConnectionHandler<THub> : ConnectionHandler where THub : Hub
     private readonly int _maxParallelInvokes;
 
     // Internal for testing
-    internal ISystemClock SystemClock { get; set; } = new SystemClock();
+    internal TimeProvider TimeProvider { get; set; } = TimeProvider.System;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HubConnectionHandler{THub}"/> class.
@@ -67,6 +61,7 @@ public class HubConnectionHandler<THub> : ConnectionHandler where THub : Hub
         _userIdProvider = userIdProvider;
 
         _enableDetailedErrors = false;
+        bool disableImplicitFromServiceParameters;
 
         List<IHubFilter>? hubFilters = null;
         if (_hubOptions.UserHasSetValues)
@@ -74,6 +69,7 @@ public class HubConnectionHandler<THub> : ConnectionHandler where THub : Hub
             _maximumMessageSize = _hubOptions.MaximumReceiveMessageSize;
             _enableDetailedErrors = _hubOptions.EnableDetailedErrors ?? _enableDetailedErrors;
             _maxParallelInvokes = _hubOptions.MaximumParallelInvocationsPerClient;
+            disableImplicitFromServiceParameters = _hubOptions.DisableImplicitFromServicesParameters;
 
             if (_hubOptions.HubFilters != null)
             {
@@ -85,6 +81,7 @@ public class HubConnectionHandler<THub> : ConnectionHandler where THub : Hub
             _maximumMessageSize = _globalHubOptions.MaximumReceiveMessageSize;
             _enableDetailedErrors = _globalHubOptions.EnableDetailedErrors ?? _enableDetailedErrors;
             _maxParallelInvokes = _globalHubOptions.MaximumParallelInvocationsPerClient;
+            disableImplicitFromServiceParameters = _globalHubOptions.DisableImplicitFromServicesParameters;
 
             if (_globalHubOptions.HubFilters != null)
             {
@@ -96,8 +93,12 @@ public class HubConnectionHandler<THub> : ConnectionHandler where THub : Hub
             serviceScopeFactory,
             new HubContext<THub>(lifetimeManager),
             _enableDetailedErrors,
+            disableImplicitFromServiceParameters,
+            // TODO
+            useAcks: true,
             new Logger<DefaultHubDispatcher<THub>>(loggerFactory),
-            hubFilters);
+            hubFilters,
+            lifetimeManager);
     }
 
     /// <inheritdoc />
@@ -120,7 +121,7 @@ public class HubConnectionHandler<THub> : ConnectionHandler where THub : Hub
             ClientTimeoutInterval = _hubOptions.ClientTimeoutInterval ?? _globalHubOptions.ClientTimeoutInterval ?? HubOptionsSetup.DefaultClientTimeoutInterval,
             StreamBufferCapacity = _hubOptions.StreamBufferCapacity ?? _globalHubOptions.StreamBufferCapacity ?? HubOptionsSetup.DefaultStreamBufferCapacity,
             MaximumReceiveMessageSize = _maximumMessageSize,
-            SystemClock = SystemClock,
+            TimeProvider = TimeProvider,
             MaximumParallelInvocations = _maxParallelInvokes,
         };
 
@@ -200,6 +201,9 @@ public class HubConnectionHandler<THub> : ConnectionHandler where THub : Hub
         // Ensure the connection is aborted before firing disconnect
         await connection.AbortAsync();
 
+        // If a client result is requested in OnDisconnectedAsync we want to avoid the SemaphoreFullException and get the better connection disconnected IOException
+        _ = connection.ActiveInvocationLimit.TryAcquire();
+
         try
         {
             await _dispatcher.OnDisconnectedAsync(connection, exception);
@@ -241,7 +245,7 @@ public class HubConnectionHandler<THub> : ConnectionHandler where THub : Hub
         var protocol = connection.Protocol;
         connection.BeginClientTimeout();
 
-        var binder = new HubConnectionBinder<THub>(_dispatcher, connection);
+        var binder = new HubConnectionBinder<THub>(_dispatcher, _lifetimeManager, connection);
 
         while (true)
         {

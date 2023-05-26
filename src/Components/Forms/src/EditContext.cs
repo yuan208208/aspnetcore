@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 
@@ -67,6 +65,11 @@ public sealed class EditContext
     /// Gets a collection of arbitrary properties associated with this instance.
     /// </summary>
     public EditContextProperties Properties { get; }
+
+    /// <summary>
+    /// Gets whether field identifiers should be generated for &lt;input&gt; elements.
+    /// </summary>
+    public bool ShouldUseFieldIdentifiers { get; set; } = !OperatingSystem.IsBrowser();
 
     /// <summary>
     /// Signals that the value for the specified field has changed.

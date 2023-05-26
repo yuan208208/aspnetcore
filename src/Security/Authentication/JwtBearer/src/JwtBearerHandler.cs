@@ -1,14 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -29,8 +26,17 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
     /// Initializes a new instance of <see cref="JwtBearerHandler"/>.
     /// </summary>
     /// <inheritdoc />
+    [Obsolete("ISystemClock is obsolete, use TimeProvider on AuthenticationSchemeOptions instead.")]
     public JwtBearerHandler(IOptionsMonitor<JwtBearerOptions> options, ILoggerFactory logger, UrlEncoder encoder, ISystemClock clock)
         : base(options, logger, encoder, clock)
+    { }
+
+    /// <summary>
+    /// Initializes a new instance of <see cref="JwtBearerHandler"/>.
+    /// </summary>
+    /// <inheritdoc />
+    public JwtBearerHandler(IOptionsMonitor<JwtBearerOptions> options, ILoggerFactory logger, UrlEncoder encoder)
+        : base(options, logger, encoder)
     { }
 
     /// <summary>
@@ -52,7 +58,7 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
     /// <returns></returns>
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
-        string? token = null;
+        string? token;
         try
         {
             // Give application opportunity to find from a different location, adjust, or reject token
@@ -181,7 +187,7 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
                 return AuthenticateResult.Fail(authenticationFailedContext.Exception);
             }
 
-            return AuthenticateResult.Fail("No SecurityTokenValidator available for token.");
+            return AuthenticateResults.ValidatorNotFound;
         }
         catch (Exception ex)
         {
@@ -291,7 +297,20 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
     protected override Task HandleForbiddenAsync(AuthenticationProperties properties)
     {
         var forbiddenContext = new ForbiddenContext(Context, Scheme, Options);
-        Response.StatusCode = 403;
+
+        if (Response.StatusCode == 403)
+        {
+            // No-op
+        }
+        else if (Response.HasStarted)
+        {
+            Logger.ForbiddenResponseHasStarted();
+        }
+        else
+        {
+            Response.StatusCode = 403;
+        }
+
         return Events.Forbidden(forbiddenContext);
     }
 
@@ -313,34 +332,24 @@ public class JwtBearerHandler : AuthenticationHandler<JwtBearerOptions>
         {
             // Order sensitive, some of these exceptions derive from others
             // and we want to display the most specific message possible.
-            switch (ex)
+            string? message = ex switch
             {
-                case SecurityTokenInvalidAudienceException stia:
-                    messages.Add($"The audience '{stia.InvalidAudience ?? "(null)"}' is invalid");
-                    break;
-                case SecurityTokenInvalidIssuerException stii:
-                    messages.Add($"The issuer '{stii.InvalidIssuer ?? "(null)"}' is invalid");
-                    break;
-                case SecurityTokenNoExpirationException _:
-                    messages.Add("The token has no expiration");
-                    break;
-                case SecurityTokenInvalidLifetimeException stil:
-                    messages.Add("The token lifetime is invalid; NotBefore: "
-                        + $"'{stil.NotBefore?.ToString(CultureInfo.InvariantCulture) ?? "(null)"}'"
-                        + $", Expires: '{stil.Expires?.ToString(CultureInfo.InvariantCulture) ?? "(null)"}'");
-                    break;
-                case SecurityTokenNotYetValidException stnyv:
-                    messages.Add($"The token is not valid before '{stnyv.NotBefore.ToString(CultureInfo.InvariantCulture)}'");
-                    break;
-                case SecurityTokenExpiredException ste:
-                    messages.Add($"The token expired at '{ste.Expires.ToString(CultureInfo.InvariantCulture)}'");
-                    break;
-                case SecurityTokenSignatureKeyNotFoundException _:
-                    messages.Add("The signature key was not found");
-                    break;
-                case SecurityTokenInvalidSignatureException _:
-                    messages.Add("The signature is invalid");
-                    break;
+                SecurityTokenInvalidAudienceException stia => $"The audience '{stia.InvalidAudience ?? "(null)"}' is invalid",
+                SecurityTokenInvalidIssuerException stii => $"The issuer '{stii.InvalidIssuer ?? "(null)"}' is invalid",
+                SecurityTokenNoExpirationException _ => "The token has no expiration",
+                SecurityTokenInvalidLifetimeException stil => "The token lifetime is invalid; NotBefore: "
+                    + $"'{stil.NotBefore?.ToString(CultureInfo.InvariantCulture) ?? "(null)"}'"
+                    + $", Expires: '{stil.Expires?.ToString(CultureInfo.InvariantCulture) ?? "(null)"}'",
+                SecurityTokenNotYetValidException stnyv => $"The token is not valid before '{stnyv.NotBefore.ToString(CultureInfo.InvariantCulture)}'",
+                SecurityTokenExpiredException ste => $"The token expired at '{ste.Expires.ToString(CultureInfo.InvariantCulture)}'",
+                SecurityTokenSignatureKeyNotFoundException _ => "The signature key was not found",
+                SecurityTokenInvalidSignatureException _ => "The signature is invalid",
+                _ => null,
+            };
+
+            if (message is not null)
+            {
+                messages.Add(message);
             }
         }
 

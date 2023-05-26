@@ -1,12 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Security.Claims;
-using System.Text;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,7 +9,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Identity.Test;
 
@@ -166,7 +160,6 @@ public class SignInManagerTest
         auth.Verify();
     }
 
-
     [Fact]
     public async Task PasswordSignInWorksWithNonTwoFactorStore()
     {
@@ -212,7 +205,7 @@ public class SignInManagerTest
         if (tfaEnabled)
         {
             manager.Setup(m => m.GetTwoFactorEnabledAsync(user)).ReturnsAsync(true).Verifiable();
-            manager.Setup(m => m.GetValidTwoFactorProvidersAsync(user)).ReturnsAsync(new string[1] {"Fake"}).Verifiable();
+            manager.Setup(m => m.GetValidTwoFactorProvidersAsync(user)).ReturnsAsync(new string[1] { "Fake" }).Verifiable();
         }
 
         if (tfaRemembered)
@@ -376,7 +369,7 @@ public class SignInManagerTest
         {
             helper.Options.Tokens.AuthenticatorTokenProvider = providerName;
         }
-        var id = helper.StoreTwoFactorInfo(user.Id, null);
+        var id = SignInManager<PocoUser>.StoreTwoFactorInfo(user.Id, null);
         SetupSignIn(context, auth, user.Id, isPersistent);
         auth.Setup(a => a.AuthenticateAsync(context, IdentityConstants.TwoFactorUserIdScheme))
             .ReturnsAsync(AuthenticateResult.Success(new AuthenticationTicket(id, null, IdentityConstants.TwoFactorUserIdScheme))).Verifiable();
@@ -418,7 +411,7 @@ public class SignInManagerTest
         {
             helper.Options.Tokens.AuthenticatorTokenProvider = providerName;
         }
-        var id = helper.StoreTwoFactorInfo(user.Id, null);
+        var id = SignInManager<PocoUser>.StoreTwoFactorInfo(user.Id, null);
         auth.Setup(a => a.AuthenticateAsync(context, IdentityConstants.TwoFactorUserIdScheme))
             .ReturnsAsync(AuthenticateResult.Success(new AuthenticationTicket(id, null, IdentityConstants.TwoFactorUserIdScheme))).Verifiable();
 
@@ -427,6 +420,47 @@ public class SignInManagerTest
 
         // Assert
         Assert.False(result.Succeeded);
+        manager.Verify();
+        auth.Verify();
+    }
+
+    [Theory]
+    [InlineData(true, true, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, false, false)]
+    public async Task IsTwoFactorEnabled(bool userManagerSupportsTwoFactor, bool userTwoFactorEnabled, bool hasValidProviders)
+    {
+        // Setup
+        var user = new PocoUser { UserName = "Foo" };
+        var manager = SetupUserManager(user);
+        manager.Setup(m => m.SupportsUserTwoFactor).Returns(userManagerSupportsTwoFactor).Verifiable();
+        if (userManagerSupportsTwoFactor)
+        {
+            manager.Setup(m => m.GetTwoFactorEnabledAsync(user)).ReturnsAsync(userTwoFactorEnabled).Verifiable();
+            if (userTwoFactorEnabled)
+            {
+                manager
+                    .Setup(m => m.GetValidTwoFactorProvidersAsync(user))
+                    .ReturnsAsync(hasValidProviders ? new string[1] { "Fake" } : Array.Empty<string>())
+                    .Verifiable();
+            }
+        }
+
+        var context = new DefaultHttpContext();
+        var auth = MockAuth(context);
+        var helper = SetupSignInManager(manager.Object, context);
+
+        // Act
+        var result = await helper.IsTwoFactorEnabledAsync(user);
+
+        // Assert
+        var expected = userManagerSupportsTwoFactor && userTwoFactorEnabled && hasValidProviders;
+        Assert.Equal(expected, result);
         manager.Verify();
         auth.Verify();
     }
@@ -453,7 +487,7 @@ public class SignInManagerTest
         var helper = SetupSignInManager(manager.Object, context);
         var twoFactorInfo = new SignInManager<PocoUser>.TwoFactorAuthenticationInfo { UserId = user.Id };
         var loginProvider = "loginprovider";
-        var id = helper.StoreTwoFactorInfo(user.Id, externalLogin ? loginProvider : null);
+        var id = SignInManager<PocoUser>.StoreTwoFactorInfo(user.Id, externalLogin ? loginProvider : null);
         if (externalLogin)
         {
             auth.Setup(a => a.SignInAsync(context,
@@ -596,7 +630,7 @@ public class SignInManagerTest
         var helper = SetupSignInManager(manager.Object, context);
         var twoFactorInfo = new SignInManager<PocoUser>.TwoFactorAuthenticationInfo { UserId = user.Id };
         var loginProvider = "loginprovider";
-        var id = helper.StoreTwoFactorInfo(user.Id, externalLogin ? loginProvider : null);
+        var id = SignInManager<PocoUser>.StoreTwoFactorInfo(user.Id, externalLogin ? loginProvider : null);
         if (externalLogin)
         {
             auth.Setup(a => a.SignInAsync(context,
@@ -650,7 +684,6 @@ public class SignInManagerTest
             It.Is<ClaimsPrincipal>(i => i.FindFirstValue(ClaimTypes.Name) == user.Id
                 && i.Identities.First().AuthenticationType == IdentityConstants.TwoFactorRememberMeScheme),
             It.Is<AuthenticationProperties>(v => v.IsPersistent == true))).Returns(Task.FromResult(0)).Verifiable();
-
 
         // Act
         await helper.RememberTwoFactorClientAsync(user);
@@ -947,6 +980,37 @@ public class SignInManagerTest
 
         // Assert
         Assert.Equal("Blah blah", externalLoginInfo.ProviderDisplayName);
+    }
+
+    [Fact]
+    public async Task GetExternalLoginInfoAsyncWithOidcSubClaim()
+    {
+        // Arrange
+        var user = new PocoUser { Id = "foo", UserName = "Foo" };
+        var userManager = SetupUserManager(user);
+        var context = new DefaultHttpContext();
+        var identity = new ClaimsIdentity();
+        identity.AddClaim(new Claim("sub", "bar"));
+        var principal = new ClaimsPrincipal(identity);
+        var properties = new AuthenticationProperties();
+        properties.Items["LoginProvider"] = "blah";
+        var authResult = AuthenticateResult.Success(new AuthenticationTicket(principal, properties, "blah"));
+        var auth = MockAuth(context);
+        auth.Setup(s => s.AuthenticateAsync(context, IdentityConstants.ExternalScheme)).ReturnsAsync(authResult);
+        var schemeProvider = new Mock<IAuthenticationSchemeProvider>();
+        var handler = new Mock<IAuthenticationHandler>();
+        schemeProvider.Setup(s => s.GetAllSchemesAsync())
+            .ReturnsAsync(new[]
+            {
+                new AuthenticationScheme("blah", "Blah blah", handler.Object.GetType())
+            });
+        var signInManager = SetupSignInManager(userManager.Object, context, schemeProvider: schemeProvider.Object);
+
+        // Act
+        var externalLoginInfo = await signInManager.GetExternalLoginInfoAsync();
+
+        // Assert
+        Assert.Equal("bar", externalLoginInfo.ProviderKey);
     }
 
     [Fact]

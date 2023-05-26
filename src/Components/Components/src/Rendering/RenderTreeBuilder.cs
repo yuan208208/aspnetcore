@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Components.RenderTree;
@@ -29,6 +27,10 @@ public sealed class RenderTreeBuilder : IDisposable
     private RenderTreeFrameType? _lastNonAttributeFrameType;
     private bool _hasSeenAddMultipleAttributes;
     private Dictionary<string, int>? _seenAttributeNames;
+    private Dictionary<string, int>? _seenEventHandlerNames;
+
+    // Configure the render tree builder to capture the event handler names.
+    internal bool TrackNamedEventHandlers { get; set; }
 
     /// <summary>
     /// The reserved parameter name used for supplying child content.
@@ -171,7 +173,6 @@ public sealed class RenderTreeBuilder : IDisposable
         {
             throw new InvalidOperationException($"Valueless attributes may only be added immediately after frames of type {RenderTreeFrameType.Element}");
         }
-
 
         _entries.AppendAttribute(sequence, name, BoxedTrue);
     }
@@ -486,6 +487,42 @@ public sealed class RenderTreeBuilder : IDisposable
     }
 
     /// <summary>
+    /// <para>
+    /// Indicates that the preceding attribute represents a named event handler
+    /// with the given <paramref name="eventHandlerName"/>.
+    /// </para>
+    /// <para>
+    /// This information is used by the rendering system to support dispatching
+    /// external events by name.
+    /// </para>
+    /// </summary>
+    /// <param name="eventHandlerName">The name associated with this event handler.</param>
+    public void SetEventHandlerName(string eventHandlerName)
+    {
+        if (!TrackNamedEventHandlers)
+        {
+            return;
+        }
+
+        if (_entries.Count == 0)
+        {
+            throw new InvalidOperationException("No preceding attribute frame exists.");
+        }
+
+        ref var prevFrame = ref _entries.Buffer[_entries.Count - 1];
+        if (prevFrame.FrameTypeField != RenderTreeFrameType.Attribute && !(prevFrame.AttributeValue is MulticastDelegate or IEventCallback))
+        {
+            throw new InvalidOperationException($"The previous attribute is not an event handler.");
+        }
+
+        _seenEventHandlerNames ??= new();
+        if (!_seenEventHandlerNames.TryAdd(eventHandlerName, _entries.Count - 1))
+        {
+            throw new InvalidOperationException($"An event handler '{eventHandlerName}' is already defined in this component.");
+        }
+    }
+
+    /// <summary>
     /// Appends a frame representing a child component.
     /// </summary>
     /// <typeparam name="TComponent">The type of the child component.</typeparam>
@@ -506,6 +543,18 @@ public sealed class RenderTreeBuilder : IDisposable
         }
 
         OpenComponentUnchecked(sequence, componentType);
+    }
+
+    /// <summary>
+    /// Appends a frame representing a component parameter.
+    /// </summary>
+    /// <param name="sequence">An integer that represents the position of the instruction in the source code.</param>
+    /// <param name="name">The name of the attribute.</param>
+    /// <param name="value">The value of the attribute.</param>
+    public void AddComponentParameter(int sequence, string name, object? value)
+    {
+        AssertCanAddComponentParameter();
+        _entries.AppendAttribute(sequence, name, value);
     }
 
     /// <summary>
@@ -652,6 +701,14 @@ public sealed class RenderTreeBuilder : IDisposable
         }
     }
 
+    private void AssertCanAddComponentParameter()
+    {
+        if (_lastNonAttributeFrameType != RenderTreeFrameType.Component)
+        {
+            throw new InvalidOperationException($"Component parameters may only be added immediately after frames of type {RenderTreeFrameType.Component}");
+        }
+    }
+
     private int? GetCurrentParentFrameIndex()
         => _openElementIndices.Count == 0 ? (int?)null : _openElementIndices.Peek();
 
@@ -673,6 +730,8 @@ public sealed class RenderTreeBuilder : IDisposable
         _lastNonAttributeFrameType = null;
         _hasSeenAddMultipleAttributes = false;
         _seenAttributeNames?.Clear();
+        _seenEventHandlerNames?.Clear();
+        TrackNamedEventHandlers = false;
     }
 
     // internal because this should only be used during the post-event tree patching logic
@@ -808,5 +867,10 @@ public sealed class RenderTreeBuilder : IDisposable
     public void Dispose()
     {
         _entries.Dispose();
+    }
+
+    internal Dictionary<string, int>? GetNamedEvents()
+    {
+        return _seenEventHandlerNames;
     }
 }

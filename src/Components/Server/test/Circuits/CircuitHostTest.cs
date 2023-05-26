@@ -1,12 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,7 +9,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.JSInterop;
 using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Components.Server.Circuits;
 
@@ -163,6 +157,8 @@ public class CircuitHostTest
         var handler2 = new Mock<CircuitHandler>(MockBehavior.Strict);
         var sequence = new MockSequence();
 
+        SetupMockInboundActivityHandlers(sequence, handler1, handler2);
+
         handler1
             .InSequence(sequence)
             .Setup(h => h.OnCircuitOpenedAsync(It.IsAny<Circuit>(), cancellationToken))
@@ -245,8 +241,10 @@ public class CircuitHostTest
     {
         // Arrange
         var handler = new Mock<CircuitHandler>(MockBehavior.Strict);
-        var tcs = new TaskCompletionSource<object>();
+        var tcs = new TaskCompletionSource();
         var reportedErrors = new List<UnhandledExceptionEventArgs>();
+
+        SetupMockInboundActivityHandler(handler);
 
         handler
             .Setup(h => h.OnCircuitOpenedAsync(It.IsAny<Circuit>(), It.IsAny<CancellationToken>()))
@@ -290,6 +288,8 @@ public class CircuitHostTest
         var handler2 = new Mock<CircuitHandler>(MockBehavior.Strict);
         var sequence = new MockSequence();
 
+        SetupMockInboundActivityHandlers(sequence, handler1, handler2);
+
         handler1
             .InSequence(sequence)
             .Setup(h => h.OnConnectionDownAsync(It.IsAny<Circuit>(), cancellationToken))
@@ -324,6 +324,86 @@ public class CircuitHostTest
         handler2.VerifyAll();
     }
 
+    [Fact]
+    public async Task HandleInboundActivityAsync_InvokesCircuitActivityHandlers()
+    {
+        // Arrange
+        var handler1 = new Mock<CircuitHandler>(MockBehavior.Strict);
+        var handler2 = new Mock<CircuitHandler>(MockBehavior.Strict);
+        var handler3 = new Mock<CircuitHandler>(MockBehavior.Strict);
+        var sequence = new MockSequence();
+
+        var asyncLocal1 = new AsyncLocal<bool>();
+        var asyncLocal3 = new AsyncLocal<bool>();
+
+        handler3
+            .InSequence(sequence)
+            .Setup(h => h.CreateInboundActivityHandler(It.IsAny<Func<CircuitInboundActivityContext, Task>>()))
+            .Returns((Func<CircuitInboundActivityContext, Task> next) => async (CircuitInboundActivityContext context) =>
+            {
+                asyncLocal3.Value = true;
+                await next(context);
+            })
+            .Verifiable();
+
+        handler2
+            .InSequence(sequence)
+            .Setup(h => h.CreateInboundActivityHandler(It.IsAny<Func<CircuitInboundActivityContext, Task>>()))
+            .Returns((Func<CircuitInboundActivityContext, Task> next) => next)
+            .Verifiable();
+
+        handler1
+            .InSequence(sequence)
+            .Setup(h => h.CreateInboundActivityHandler(It.IsAny<Func<CircuitInboundActivityContext, Task>>()))
+            .Returns((Func<CircuitInboundActivityContext, Task> next) => async (CircuitInboundActivityContext context) =>
+            {
+                asyncLocal1.Value = true;
+                await next(context);
+            })
+            .Verifiable();
+
+        var circuitHost = TestCircuitHost.Create(handlers: new[] { handler1.Object, handler2.Object, handler3.Object });
+        var asyncLocal1ValueInHandler = false;
+        var asyncLocal3ValueInHandler = false;
+
+        // Act
+        await circuitHost.HandleInboundActivityAsync(() =>
+        {
+            asyncLocal1ValueInHandler = asyncLocal1.Value;
+            asyncLocal3ValueInHandler = asyncLocal3.Value;
+            return Task.CompletedTask;
+        });
+
+        // Assert
+        handler1.VerifyAll();
+        handler2.VerifyAll();
+        handler3.VerifyAll();
+
+        Assert.False(asyncLocal1.Value);
+        Assert.False(asyncLocal3.Value);
+
+        Assert.True(asyncLocal1ValueInHandler);
+        Assert.True(asyncLocal3ValueInHandler);
+    }
+
+    [Fact]
+    public async Task HandleInboundActivityAsync_InvokesHandlerFunc_WhenNoCircuitActivityHandlersAreRegistered()
+    {
+        // Arrange
+        var circuitHost = TestCircuitHost.Create();
+        var wasHandlerFuncInvoked = false;
+
+        // Act
+        await circuitHost.HandleInboundActivityAsync(() =>
+        {
+            wasHandlerFuncInvoked = true;
+            return Task.CompletedTask;
+        });
+
+        // Assert
+        Assert.True(wasHandlerFuncInvoked);
+    }
+
     private static TestRemoteRenderer GetRemoteRenderer()
     {
         var serviceCollection = new ServiceCollection();
@@ -331,6 +411,26 @@ public class CircuitHostTest
         return new TestRemoteRenderer(
             serviceCollection.BuildServiceProvider(),
             Mock.Of<IClientProxy>());
+    }
+
+    private static void SetupMockInboundActivityHandlers(MockSequence sequence, params Mock<CircuitHandler>[] circuitHandlers)
+    {
+        for (var i = circuitHandlers.Length - 1; i >= 0; i--)
+        {
+            circuitHandlers[i]
+                .InSequence(sequence)
+                .Setup(h => h.CreateInboundActivityHandler(It.IsAny<Func<CircuitInboundActivityContext, Task>>()))
+                .Returns((Func<CircuitInboundActivityContext, Task> next) => next)
+                .Verifiable();
+        }
+    }
+
+    private static void SetupMockInboundActivityHandler(Mock<CircuitHandler> circuitHandler)
+    {
+        circuitHandler
+            .Setup(h => h.CreateInboundActivityHandler(It.IsAny<Func<CircuitInboundActivityContext, Task>>()))
+            .Returns((Func<CircuitInboundActivityContext, Task> next) => next)
+            .Verifiable();
     }
 
     private class TestRemoteRenderer : RemoteRenderer
@@ -353,7 +453,7 @@ public class CircuitHostTest
         }
 
         private static RemoteJSRuntime CreateJSRuntime(CircuitOptions options)
-            => new RemoteJSRuntime(Options.Create(options), Options.Create(new HubOptions()), null);
+            => new RemoteJSRuntime(Options.Create(options), Options.Create(new HubOptions<ComponentHub>()), null);
     }
 
     private class DispatcherComponent : ComponentBase, IDisposable

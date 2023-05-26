@@ -1,14 +1,16 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using System.Threading;
-using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing.Matching;
+using Microsoft.AspNetCore.Routing.ShortCircuit;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Microsoft.AspNetCore.Routing;
 
@@ -21,26 +23,29 @@ internal sealed partial class EndpointRoutingMiddleware
     private readonly EndpointDataSource _endpointDataSource;
     private readonly DiagnosticListener _diagnosticListener;
     private readonly RequestDelegate _next;
-
+    private readonly RouteOptions _routeOptions;
     private Task<Matcher>? _initializationTask;
 
     public EndpointRoutingMiddleware(
         MatcherFactory matcherFactory,
         ILogger<EndpointRoutingMiddleware> logger,
         IEndpointRouteBuilder endpointRouteBuilder,
+        EndpointDataSource rootCompositeEndpointDataSource,
         DiagnosticListener diagnosticListener,
+        IOptions<RouteOptions> routeOptions,
         RequestDelegate next)
     {
-        if (endpointRouteBuilder == null)
-        {
-            throw new ArgumentNullException(nameof(endpointRouteBuilder));
-        }
+        ArgumentNullException.ThrowIfNull(endpointRouteBuilder);
 
         _matcherFactory = matcherFactory ?? throw new ArgumentNullException(nameof(matcherFactory));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _diagnosticListener = diagnosticListener ?? throw new ArgumentNullException(nameof(diagnosticListener));
         _next = next ?? throw new ArgumentNullException(nameof(next));
+        _routeOptions = routeOptions.Value;
 
+        // rootCompositeEndpointDataSource is a constructor parameter only so it always gets disposed by DI. This ensures that any
+        // disposable EndpointDataSources also get disposed. _endpointDataSource is a component of rootCompositeEndpointDataSource.
+        _ = rootCompositeEndpointDataSource;
         _endpointDataSource = new CompositeEndpointDataSource(endpointRouteBuilder.DataSources);
     }
 
@@ -83,7 +88,6 @@ internal sealed partial class EndpointRoutingMiddleware
             await matchTask;
             await middleware.SetRoutingAndContinue(httpContext);
         }
-
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -100,14 +104,102 @@ internal sealed partial class EndpointRoutingMiddleware
             // Raise an event if the route matched
             if (_diagnosticListener.IsEnabled() && _diagnosticListener.IsEnabled(DiagnosticsEndpointMatchedKey))
             {
-                // We're just going to send the HttpContext since it has all of the relevant information
-                _diagnosticListener.Write(DiagnosticsEndpointMatchedKey, httpContext);
+                Write(_diagnosticListener, httpContext);
             }
 
             Log.MatchSuccess(_logger, endpoint);
+
+            if (_logger.IsEnabled(LogLevel.Debug)
+                && endpoint.Metadata.GetMetadata<FallbackMetadata>() is not null)
+            {
+                Log.FallbackMatch(_logger, endpoint);
+            }
+
+            var shortCircuitMetadata = endpoint.Metadata.GetMetadata<ShortCircuitMetadata>();
+            if (shortCircuitMetadata is not null)
+            {
+                return ExecuteShortCircuit(shortCircuitMetadata, endpoint, httpContext);
+            }
         }
 
         return _next(httpContext);
+
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:UnrecognizedReflectionPattern",
+            Justification = "The values being passed into Write are being consumed by the application already.")]
+        static void Write(DiagnosticListener diagnosticListener, HttpContext httpContext)
+        {
+            // We're just going to send the HttpContext since it has all of the relevant information
+            diagnosticListener.Write(DiagnosticsEndpointMatchedKey, httpContext);
+        }
+    }
+
+    private Task ExecuteShortCircuit(ShortCircuitMetadata shortCircuitMetadata, Endpoint endpoint, HttpContext httpContext)
+    {
+        // This check should be kept in sync with the one in EndpointMiddleware
+        if (!_routeOptions.SuppressCheckForUnhandledSecurityMetadata)
+        {
+            if (endpoint.Metadata.GetMetadata<IAuthorizeData>() is not null)
+            {
+                ThrowCannotShortCircuitAnAuthRouteException(endpoint);
+            }
+
+            if (endpoint.Metadata.GetMetadata<ICorsMetadata>() is not null)
+            {
+                ThrowCannotShortCircuitACorsRouteException(endpoint);
+            }
+        }
+
+        if (shortCircuitMetadata.StatusCode.HasValue)
+        {
+            httpContext.Response.StatusCode = shortCircuitMetadata.StatusCode.Value;
+        }
+
+        if (endpoint.RequestDelegate is not null)
+        {
+            if (!_logger.IsEnabled(LogLevel.Information))
+            {
+                // Avoid the AwaitRequestTask state machine allocation if logging is disabled.
+                return endpoint.RequestDelegate(httpContext);
+            }
+
+            Log.ExecutingEndpoint(_logger, endpoint);
+
+            try
+            {
+                var requestTask = endpoint.RequestDelegate(httpContext);
+                if (!requestTask.IsCompletedSuccessfully)
+                {
+                    return AwaitRequestTask(endpoint, requestTask, _logger);
+                }
+            }
+            catch
+            {
+                Log.ExecutedEndpoint(_logger, endpoint);
+                throw;
+            }
+
+            Log.ExecutedEndpoint(_logger, endpoint);
+
+            return Task.CompletedTask;
+
+            static async Task AwaitRequestTask(Endpoint endpoint, Task requestTask, ILogger logger)
+            {
+                try
+                {
+                    await requestTask;
+                }
+                finally
+                {
+                    Log.ExecutedEndpoint(logger, endpoint);
+                }
+            }
+
+        }
+        else
+        {
+            Log.ShortCircuitedEndpoint(_logger, endpoint);
+        }
+        return Task.CompletedTask;
     }
 
     // Initialization is async to avoid blocking threads while reflection and things
@@ -160,6 +252,18 @@ internal sealed partial class EndpointRoutingMiddleware
         }
     }
 
+    private static void ThrowCannotShortCircuitAnAuthRouteException(Endpoint endpoint)
+    {
+        throw new InvalidOperationException($"Endpoint {endpoint.DisplayName} contains authorization metadata, " +
+            "but this endpoint is marked with short circuit and it will execute on Routing Middleware.");
+    }
+
+    private static void ThrowCannotShortCircuitACorsRouteException(Endpoint endpoint)
+    {
+        throw new InvalidOperationException($"Endpoint {endpoint.DisplayName} contains CORS metadata, " +
+            "but this endpoint is marked with short circuit and it will execute on Routing Middleware.");
+    }
+
     private static partial class Log
     {
         public static void MatchSuccess(ILogger logger, Endpoint endpoint)
@@ -176,5 +280,17 @@ internal sealed partial class EndpointRoutingMiddleware
 
         [LoggerMessage(3, LogLevel.Debug, "Endpoint '{EndpointName}' already set, skipping route matching.", EventName = "MatchingSkipped")]
         private static partial void MatchingSkipped(ILogger logger, string? endpointName);
+
+        [LoggerMessage(4, LogLevel.Information, "The endpoint '{EndpointName}' is being executed without running additional middleware.", EventName = "ExecutingEndpoint")]
+        public static partial void ExecutingEndpoint(ILogger logger, Endpoint endpointName);
+
+        [LoggerMessage(5, LogLevel.Information, "The endpoint '{EndpointName}' has been executed without running additional middleware.", EventName = "ExecutedEndpoint")]
+        public static partial void ExecutedEndpoint(ILogger logger, Endpoint endpointName);
+
+        [LoggerMessage(6, LogLevel.Information, "The endpoint '{EndpointName}' is being short circuited without running additional middleware or producing a response.", EventName = "ShortCircuitedEndpoint")]
+        public static partial void ShortCircuitedEndpoint(ILogger logger, Endpoint endpointName);
+
+        [LoggerMessage(7, LogLevel.Debug, "Matched endpoint '{EndpointName}' is a fallback endpoint.", EventName = "FallbackMatch", SkipEnabledCheck = true)]
+        public static partial void FallbackMatch(ILogger logger, Endpoint endpointName);
     }
 }

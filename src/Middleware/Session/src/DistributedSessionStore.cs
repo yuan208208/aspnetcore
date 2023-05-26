@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
@@ -23,15 +22,8 @@ public class DistributedSessionStore : ISessionStore
     /// <param name="loggerFactory">The <see cref="ILoggerFactory"/>.</param>
     public DistributedSessionStore(IDistributedCache cache, ILoggerFactory loggerFactory)
     {
-        if (cache == null)
-        {
-            throw new ArgumentNullException(nameof(cache));
-        }
-
-        if (loggerFactory == null)
-        {
-            throw new ArgumentNullException(nameof(loggerFactory));
-        }
+        ArgumentNullException.ThrowIfNull(cache);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
 
         _cache = cache;
         _loggerFactory = loggerFactory;
@@ -45,10 +37,7 @@ public class DistributedSessionStore : ISessionStore
             throw new ArgumentException(Resources.ArgumentCannotBeNullOrEmpty, nameof(sessionKey));
         }
 
-        if (tryEstablishSession == null)
-        {
-            throw new ArgumentNullException(nameof(tryEstablishSession));
-        }
+        ArgumentNullException.ThrowIfNull(tryEstablishSession);
 
         return new DistributedSession(_cache, sessionKey, idleTimeout, ioTimeout, tryEstablishSession, _loggerFactory, isNewSessionKey);
     }

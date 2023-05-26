@@ -1,11 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-
 namespace Microsoft.AspNetCore.Components.Routing;
 
-internal class TemplateSegment
+internal sealed class TemplateSegment
 {
     public TemplateSegment(string template, string segment, bool isParameter)
     {
@@ -15,13 +13,20 @@ internal class TemplateSegment
 
         if (IsCatchAll)
         {
-            // Only one '*' currently allowed
-            Value = segment[1..];
+            // Only '*' and '**' allowed at the beginning
+            if (segment.Length > 1 && segment[1] == '*')
+            {
+                Value = segment[2..];
+            }
+            else
+            {
+                Value = segment[1..];
+            }
 
             var invalidCharacterIndex = Value.IndexOf('*');
             if (invalidCharacterIndex != -1)
             {
-                throw new InvalidOperationException($"Invalid template '{template}'. A catch-all parameter may only have one '*' at the beginning of the segment.");
+                throw new InvalidOperationException($"Invalid template '{template}'. A catch-all parameter may only have '*' or '**' at the beginning of the segment.");
             }
         }
         else
@@ -34,7 +39,6 @@ internal class TemplateSegment
         {
             if (Value.IndexOf(':') < 0)
             {
-
                 // Set the IsOptional flag to true for segments that contain
                 // a parameter with no type constraints but optionality set
                 // via the '?' token.

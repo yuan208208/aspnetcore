@@ -52,7 +52,7 @@ export class WebSocketTransport implements ITransport {
             const cookies = this._httpClient.getCookieString(url);
             let opened = false;
 
-            if (Platform.isNode) {
+            if (Platform.isNode || Platform.isReactNative) {
                 const headers: {[k: string]: string} = {};
                 const [name, value] = getUserAgentHeader();
                 headers[name] = value;
@@ -159,7 +159,7 @@ export class WebSocketTransport implements ITransport {
         return Promise.resolve();
     }
 
-    private _close(event?: CloseEvent | Error): void {
+    private _close(event?: CloseEvent | Error | unknown): void {
         // webSocket will be null if the transport did not start successfully
         if (this._webSocket) {
             // Clear websocket handlers because we are considering the socket closed now

@@ -28,6 +28,7 @@ namespace Microsoft.AspNetCore.Server.IIS.FunctionalTests;
 #endif
 
 [Collection(PublishedSitesCollection.Name)]
+[SkipOnHelix("Unsupported queue", Queues = "Windows.Amd64.VS2022.Pre.Open;")]
 public class ApplicationInitializationTests : IISFunctionalTestBase
 {
     public ApplicationInitializationTests(PublishedSitesFixture fixture) : base(fixture)
@@ -70,7 +71,8 @@ public class ApplicationInitializationTests : IISFunctionalTestBase
             EnablePreload(baseDeploymentParameters);
 
             baseDeploymentParameters.ServerConfigActionList.Add(
-                (config, _) => {
+                (config, _) =>
+                {
                     config
                         .RequiredElement("system.webServer")
                         .GetOrAdd("applicationInitialization")
@@ -89,7 +91,8 @@ public class ApplicationInitializationTests : IISFunctionalTestBase
     {
         baseDeploymentParameters.EnsureSection("applicationInitialization", "system.webServer");
         baseDeploymentParameters.ServerConfigActionList.Add(
-            (config, _) => {
+            (config, _) =>
+            {
 
                 config
                     .RequiredElement("system.applicationHost")

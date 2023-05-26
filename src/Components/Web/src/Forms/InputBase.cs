@@ -17,6 +17,9 @@ public abstract class InputBase<TValue> : ComponentBase, IDisposable
 {
     private readonly EventHandler<ValidationStateChangedEventArgs> _validationStateChangedHandler;
     private bool _hasInitializedParameters;
+    private bool _parsingFailed;
+    private string? _incomingValueBeforeParsing;
+    private string? _formattedValueExpression;
     private bool _previousParsingAttemptFailed;
     private ValidationMessageStore? _parsingValidationMessages;
     private Type? _nullableUnderlyingType;
@@ -75,7 +78,18 @@ public abstract class InputBase<TValue> : ComponentBase, IDisposable
             var hasChanged = !EqualityComparer<TValue>.Default.Equals(value, Value);
             if (hasChanged)
             {
+                _parsingFailed = false;
+
+                // If we don't do this, then when the user edits from A to B, we'd:
+                // - Do a render that changes back to A
+                // - Then send the updated value to the parent, which sends the B back to this component
+                // - Do another render that changes it to B again
+                // The unnecessary reversion from B to A can cause selection to be lost while typing
+                // A better solution would be somehow forcing the parent component's render to occur first,
+                // but that would involve a complex change in the renderer to keep the render queue sorted
+                // by component depth or similar.
                 Value = value;
+
                 _ = ValueChanged.InvokeAsync(Value);
                 EditContext?.NotifyFieldChanged(FieldIdentifier);
             }
@@ -87,29 +101,33 @@ public abstract class InputBase<TValue> : ComponentBase, IDisposable
     /// </summary>
     protected string? CurrentValueAsString
     {
-        get => FormatValueAsString(CurrentValue);
+        // InputBase-derived components can hold invalid states (e.g., an InputNumber being blank even when bound
+        // to an int value). So, if parsing fails, we keep the rejected string in the UI even though it doesn't
+        // match what's on the .NET model. This avoids interfering with typing, but still notifies the EditContext
+        // about the validation error message.
+        get => _parsingFailed ? _incomingValueBeforeParsing : FormatValueAsString(CurrentValue);
+
         set
         {
+            _incomingValueBeforeParsing = value;
             _parsingValidationMessages?.Clear();
-
-            bool parsingFailed;
 
             if (_nullableUnderlyingType != null && string.IsNullOrEmpty(value))
             {
                 // Assume if it's a nullable type, null/empty inputs should correspond to default(T)
                 // Then all subclasses get nullable support almost automatically (they just have to
                 // not reject Nullable<T> based on the type itself).
-                parsingFailed = false;
+                _parsingFailed = false;
                 CurrentValue = default!;
             }
             else if (TryParseValueFromString(value, out var parsedValue, out var validationErrorMessage))
             {
-                parsingFailed = false;
+                _parsingFailed = false;
                 CurrentValue = parsedValue!;
             }
             else
             {
-                parsingFailed = true;
+                _parsingFailed = true;
 
                 // EditContext may be null if the input is not a child component of EditForm.
                 if (EditContext is not null)
@@ -123,10 +141,10 @@ public abstract class InputBase<TValue> : ComponentBase, IDisposable
             }
 
             // We can skip the validation notification if we were previously valid and still are
-            if (parsingFailed || _previousParsingAttemptFailed)
+            if (_parsingFailed || _previousParsingAttemptFailed)
             {
                 EditContext?.NotifyValidationStateChanged();
-                _previousParsingAttemptFailed = parsingFailed;
+                _previousParsingAttemptFailed = _parsingFailed;
             }
         }
     }
@@ -140,7 +158,7 @@ public abstract class InputBase<TValue> : ComponentBase, IDisposable
     }
 
     /// <summary>
-    /// Formats the value as a string. Derived classes can override this to determine the formating used for <see cref="CurrentValueAsString"/>.
+    /// Formats the value as a string. Derived classes can override this to determine the formatting used for <see cref="CurrentValueAsString"/>.
     /// </summary>
     /// <param name="value">The value to format.</param>
     /// <returns>A string representation of the value.</returns>
@@ -166,8 +184,34 @@ public abstract class InputBase<TValue> : ComponentBase, IDisposable
     {
         get
         {
-            var fieldClass = EditContext?.FieldCssClass(FieldIdentifier) ?? string.Empty;
-            return AttributeUtilities.CombineClassNames(AdditionalAttributes, fieldClass);
+            var fieldClass = EditContext?.FieldCssClass(FieldIdentifier);
+            return AttributeUtilities.CombineClassNames(AdditionalAttributes, fieldClass) ?? string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Gets the value to be used for the input's "name" attribute.
+    /// </summary>
+    protected string NameAttributeValue
+    {
+        get
+        {
+            if (AdditionalAttributes?.TryGetValue("name", out var nameAttributeValue) ?? false)
+            {
+                return Convert.ToString(nameAttributeValue, CultureInfo.InvariantCulture) ?? string.Empty;
+            }
+
+            if (EditContext?.ShouldUseFieldIdentifiers ?? false)
+            {
+                if (_formattedValueExpression is null && ValueExpression is not null)
+                {
+                    _formattedValueExpression = ExpressionFormatter.FormatLambda(ValueExpression);
+                }
+
+                return _formattedValueExpression ?? string.Empty;
+            }
+
+            return string.Empty;
         }
     }
 
@@ -272,8 +316,8 @@ public abstract class InputBase<TValue> : ComponentBase, IDisposable
     /// <summary>
     /// Returns a dictionary with the same values as the specified <paramref name="source"/>.
     /// </summary>
-    /// <returns>true, if a new dictrionary with copied values was created. false - otherwise.</returns>
-    private bool ConvertToDictionary(IReadOnlyDictionary<string, object>? source, out Dictionary<string, object> result)
+    /// <returns>true, if a new dictionary with copied values was created. false - otherwise.</returns>
+    private static bool ConvertToDictionary(IReadOnlyDictionary<string, object>? source, out Dictionary<string, object> result)
     {
         var newDictionaryCreated = true;
         if (source == null)

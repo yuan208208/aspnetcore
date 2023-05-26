@@ -1,15 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Components.RenderTree;
 using Microsoft.AspNetCore.Components.Test.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Components.Rendering;
 
@@ -444,6 +439,19 @@ public class RenderTreeBuilderTest
     }
 
     [Fact]
+    public void CannotAddComponentParameterAtRoot()
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+
+        // Act/Assert
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            builder.AddComponentParameter(0, "name", "value");
+        });
+    }
+
+    [Fact]
     public void CannotAddDelegateAttributeAtRoot()
     {
         // Arrange
@@ -468,6 +476,21 @@ public class RenderTreeBuilderTest
             builder.OpenElement(0, "some element");
             builder.AddContent(1, "hello");
             builder.AddAttribute(2, "name", "value");
+        });
+    }
+
+    [Fact]
+    public void CannotAddComponentParameterToText()
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+
+        // Act/Assert
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            builder.OpenElement(0, "some element");
+            builder.AddContent(1, "hello");
+            builder.AddComponentParameter(2, "name", "value");
         });
     }
 
@@ -497,6 +520,20 @@ public class RenderTreeBuilderTest
         {
             builder.OpenRegion(0);
             builder.AddAttribute(1, "name", "value");
+        });
+    }
+
+    [Fact]
+    public void CannotAddComponentParameterToRegion()
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+
+        // Act/Assert
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            builder.OpenRegion(0);
+            builder.AddComponentParameter(1, "name", "value");
         });
     }
 
@@ -531,21 +568,50 @@ public class RenderTreeBuilderTest
     }
 
     [Fact]
+    public void CannotAddComponentParameterToComponentReferenceCapture()
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+
+        // Act/Assert
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            builder.OpenComponent<TestComponent>(0);
+            builder.AddComponentReferenceCapture(1, _ => { });
+            builder.AddComponentParameter(2, "name", "value");
+        });
+    }
+
+    [Fact]
+    public void CannotAddComponentParameterToElement()
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+
+        // Act/Assert
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            builder.OpenElement(0, "some element");
+            builder.AddComponentParameter(2, "name", "value");
+        });
+    }
+
+    [Fact]
     public void CanAddChildComponentsUsingGenericParam()
     {
         // Arrange
         var builder = new RenderTreeBuilder();
 
         // Act
-        builder.OpenElement(10, "parent");                   //  0: <parent>
-        builder.OpenComponent<TestComponent>(11);            //  1:     <testcomponent
-        builder.AddAttribute(12, "child1attribute1", "A");   //  2:       child1attribute1="A"
-        builder.AddAttribute(13, "child1attribute2", "B");   //  3:       child1attribute2="B">
-        builder.CloseComponent();                            //         </testcomponent>
-        builder.OpenComponent<TestComponent>(14);            //  4:     <testcomponent
-        builder.AddAttribute(15, "child2attribute", "C");    //  5:       child2attribute="C">
-        builder.CloseComponent();                            //         </testcomponent>
-        builder.CloseElement();                              //     </parent>
+        builder.OpenElement(10, "parent");                          //  0: <parent>
+        builder.OpenComponent<TestComponent>(11);                   //  1:     <testcomponent
+        builder.AddComponentParameter(12, "child1attribute1", "A"); //  2:       child1attribute1="A"
+        builder.AddComponentParameter(13, "child1attribute2", "B"); //  3:       child1attribute2="B">
+        builder.CloseComponent();                                   //         </testcomponent>
+        builder.OpenComponent<TestComponent>(14);                   //  4:     <testcomponent
+        builder.AddComponentParameter(15, "child2attribute", "C");  //  5:       child2attribute="C">
+        builder.CloseComponent();                                   //         </testcomponent>
+        builder.CloseElement();                                     //     </parent>
 
         // Assert
         Assert.Collection(builder.GetFrames().AsEnumerable(),
@@ -738,7 +804,7 @@ public class RenderTreeBuilderTest
 
         // Act
         builder.OpenComponent<TestComponent>(0);                //  0: <TestComponent
-        builder.AddAttribute(1, "attribute2", 123);             //  1:     attribute2=intExpression123>
+        builder.AddComponentParameter(1, "attribute2", 123);    //  1:     attribute2=intExpression123>
         builder.AddComponentReferenceCapture(2, myAction);      //  2:     # capture: myAction
         builder.AddContent(3, "some text");                     //  3:     some text
         builder.CloseComponent();                               //     </TestComponent>
@@ -890,6 +956,26 @@ public class RenderTreeBuilderTest
             frame => AssertFrame.Attribute(frame, "attr", value, 1));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AddComponentParameter_Component_Bool_SetsAttributeValue(bool value)
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+
+        // Act
+        builder.OpenComponent<TestComponent>(0);
+        builder.AddComponentParameter(1, "attr", value);
+        builder.CloseComponent();
+
+        // Assert
+        Assert.Collection(
+            builder.GetFrames().AsEnumerable(),
+            frame => AssertFrame.Component<TestComponent>(frame, 2, 0),
+            frame => AssertFrame.Attribute(frame, "attr", value, 1));
+    }
+
     [Fact]
     public void AddAttribute_Element_StringValue_AddsFrame()
     {
@@ -936,6 +1022,26 @@ public class RenderTreeBuilderTest
         // Act
         builder.OpenComponent<TestComponent>(0);
         builder.AddAttribute(1, "attr", value);
+        builder.CloseComponent();
+
+        // Assert
+        Assert.Collection(
+            builder.GetFrames().AsEnumerable(),
+            frame => AssertFrame.Component<TestComponent>(frame, 2, 0),
+            frame => AssertFrame.Attribute(frame, "attr", value, 1));
+    }
+
+    [Theory]
+    [InlineData("hi")]
+    [InlineData(null)]
+    public void AddComponentParameter_Component_StringValue_SetsAttributeValue(string value)
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+
+        // Act
+        builder.OpenComponent<TestComponent>(0);
+        builder.AddComponentParameter(1, "attr", value);
         builder.CloseComponent();
 
         // Assert
@@ -1044,6 +1150,25 @@ public class RenderTreeBuilderTest
             frame => AssertFrame.Attribute(frame, "attr", value, 1));
     }
 
+    [Theory]
+    [MemberData(nameof(EventHandlerValues))]
+    public void AddComponentParameter_Component_EventHandlerValue_SetsAttributeValue(Action<EventArgs> value)
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+
+        // Act
+        builder.OpenComponent<TestComponent>(0);
+        builder.AddComponentParameter(1, "attr", value);
+        builder.CloseComponent();
+
+        // Assert
+        Assert.Collection(
+            builder.GetFrames().AsEnumerable(),
+            frame => AssertFrame.Component<TestComponent>(frame, 2, 0),
+            frame => AssertFrame.Attribute(frame, "attr", value, 1));
+    }
+
     [Fact]
     public void AddAttribute_Element_EventCallback_AddsFrame()
     {
@@ -1122,6 +1247,26 @@ public class RenderTreeBuilderTest
     }
 
     [Fact]
+    public void AddComponentParameter_Component_EventCallback_AddsFrame()
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+        var receiver = Mock.Of<IHandleEvent>();
+        var callback = new EventCallback(receiver, new Action(() => { }));
+
+        // Act
+        builder.OpenComponent<TestComponent>(0);
+        builder.AddComponentParameter(1, "attr", callback);
+        builder.CloseComponent();
+
+        // Assert
+        Assert.Collection(
+            builder.GetFrames().AsEnumerable(),
+            frame => AssertFrame.Component<TestComponent>(frame, 2, 0),
+            frame => AssertFrame.Attribute(frame, "attr", callback, 1));
+    }
+
+    [Fact]
     public void AddAttribute_Element_EventCallbackOfT_AddsFrame()
     {
         // Arrange
@@ -1189,6 +1334,26 @@ public class RenderTreeBuilderTest
         // Act
         builder.OpenComponent<TestComponent>(0);
         builder.AddAttribute(1, "attr", callback);
+        builder.CloseComponent();
+
+        // Assert
+        Assert.Collection(
+            builder.GetFrames().AsEnumerable(),
+            frame => AssertFrame.Component<TestComponent>(frame, 2, 0),
+            frame => AssertFrame.Attribute(frame, "attr", callback, 1));
+    }
+
+    [Fact]
+    public void AddComponentParameter_Component_EventCallbackOfT_AddsFrame()
+    {
+        // Arrange
+        var builder = new RenderTreeBuilder();
+        var receiver = Mock.Of<IHandleEvent>();
+        var callback = new EventCallback<string>(receiver, new Action<string>((s) => { }));
+
+        // Act
+        builder.OpenComponent<TestComponent>(0);
+        builder.AddComponentParameter(1, "attr", callback);
         builder.CloseComponent();
 
         // Assert
@@ -1555,9 +1720,9 @@ public class RenderTreeBuilderTest
 
         // Act
         builder.OpenComponent<TestComponent>(0);
-        builder.AddAttribute(1, "param before", 123);
+        builder.AddComponentParameter(1, "param before", 123);
         builder.SetKey(keyValue);
-        builder.AddAttribute(2, "param after", 456);
+        builder.AddComponentParameter(2, "param after", 456);
         builder.CloseComponent();
 
         // Assert
@@ -1664,7 +1829,6 @@ public class RenderTreeBuilderTest
             f => AssertFrame.Attribute(f, "id", "hi"),
             f => AssertFrame.Attribute(f, "id", "bye"));
     }
-
 
     [Fact]
     public void ProcessDuplicateAttributes_StopsAtFirstNonAttributeFrame_Capture()
@@ -1942,4 +2106,6 @@ public class RenderTreeBuilderTest
         protected override Task UpdateDisplayAsync(in RenderBatch renderBatch)
             => throw new NotImplementedException();
     }
+
+    class TestRenderMode : IComponentRenderMode { }
 }

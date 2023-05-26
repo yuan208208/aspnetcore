@@ -1,10 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.IO.Pipelines;
-using System.Threading;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 
@@ -70,10 +67,7 @@ public class HttpConnectionDispatcherOptions
         get => _transportMaxBufferSize;
         set
         {
-            if (value < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value));
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
 
             _transportMaxBufferSize = value;
         }
@@ -90,10 +84,7 @@ public class HttpConnectionDispatcherOptions
         get => _applicationMaxBufferSize;
         set
         {
-            if (value < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value));
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
 
             _applicationMaxBufferSize = value;
         }
@@ -117,10 +108,7 @@ public class HttpConnectionDispatcherOptions
         get => _transportSendTimeout;
         set
         {
-            if (value == TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value));
-            }
+            ArgumentOutOfRangeException.ThrowIfEqual(value, TimeSpan.Zero);
 
             _transportSendTimeout = value;
             TransportSendTimeoutTicks = value.Ticks;

@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Components.Rendering;
 
@@ -35,10 +34,12 @@ public class InputCheckbox : InputBase<bool>
         builder.OpenElement(0, "input");
         builder.AddMultipleAttributes(1, AdditionalAttributes);
         builder.AddAttribute(2, "type", "checkbox");
-        builder.AddAttribute(3, "class", CssClass);
-        builder.AddAttribute(4, "checked", BindConverter.FormatValue(CurrentValue));
-        builder.AddAttribute(5, "onchange", EventCallback.Factory.CreateBinder<bool>(this, __value => CurrentValue = __value, CurrentValue));
-        builder.AddElementReferenceCapture(6, __inputReference => Element = __inputReference);
+        builder.AddAttributeIfNotNullOrEmpty(3, "name", NameAttributeValue);
+        builder.AddAttribute(4, "class", CssClass);
+        builder.AddAttribute(5, "checked", BindConverter.FormatValue(CurrentValue));
+        builder.AddAttribute(6, "onchange", EventCallback.Factory.CreateBinder<bool>(this, __value => CurrentValue = __value, CurrentValue));
+        builder.SetUpdatesAttributeName("checked");
+        builder.AddElementReferenceCapture(7, __inputReference => Element = __inputReference);
         builder.CloseElement();
     }
 

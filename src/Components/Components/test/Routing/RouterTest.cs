@@ -1,18 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Components.RenderTree;
 using Microsoft.AspNetCore.Components.Test.Helpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Components.Routing;
 
@@ -29,6 +23,7 @@ public class RouterTest
         services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
         services.AddSingleton<NavigationManager>(_navigationManager);
         services.AddSingleton<INavigationInterception, TestNavigationInterception>();
+        services.AddSingleton<IScrollToLocationHash, TestScrollToLocationHash>();
         var serviceProvider = services.BuildServiceProvider();
 
         _renderer = new TestRenderer(serviceProvider);
@@ -204,12 +199,37 @@ public class RouterTest
         Assert.Equal($"Rendering route matching {typeof(MultiSegmentRouteComponent)}", renderedFrame.TextContent);
     }
 
+    [Fact]
+    public async Task SetParametersAsyncRefreshesOnce()
+    {
+        //Arrange
+        var parameters = new Dictionary<string, object>
+            {
+                { nameof(Router.AppAssembly), typeof(RouterTest).Assembly },
+                { nameof(Router.NotFound), (RenderFragment)(builder => { }) },
+            };
+
+        var refreshCalled = 0;
+        _renderer.OnUpdateDisplay = (renderBatch) =>
+        {
+            refreshCalled += 1;
+            return;
+        };
+
+        // Act
+        await _renderer.Dispatcher.InvokeAsync(() =>
+            _router.SetParametersAsync(ParameterView.FromDictionary(parameters)));
+
+        //Assert
+        Assert.Equal(1, refreshCalled);
+    }
+
     internal class TestNavigationManager : NavigationManager
     {
         public TestNavigationManager() =>
             Initialize("https://www.example.com/subdir/", "https://www.example.com/subdir/jan");
 
-        public void NotifyLocationChanged(string uri, bool intercepted)
+        public void NotifyLocationChanged(string uri, bool intercepted, string state = null)
         {
             Uri = uri;
             NotifyLocationChanged(intercepted);
@@ -221,6 +241,14 @@ public class RouterTest
         public static readonly TestNavigationInterception Instance = new TestNavigationInterception();
 
         public Task EnableNavigationInterceptionAsync()
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    internal sealed class TestScrollToLocationHash : IScrollToLocationHash
+    {
+        public Task RefreshScrollPositionForHash(string locationAbsolute)
         {
             return Task.CompletedTask;
         }

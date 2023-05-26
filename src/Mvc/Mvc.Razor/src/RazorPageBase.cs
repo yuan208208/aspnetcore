@@ -1,14 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Html;
 using Microsoft.AspNetCore.Http;
@@ -253,7 +249,6 @@ public abstract class RazorPageBase : IRazorPage
         // We need to replace the ViewContext's Writer to ensure that all content (including content written
         // from HTML helpers) is redirected.
         viewContext.Writer = _valueBuffer;
-
     }
 
     /// <summary>
@@ -290,10 +285,7 @@ public abstract class RazorPageBase : IRazorPage
     // Internal for unit testing.
     protected internal virtual void PushWriter(TextWriter writer)
     {
-        if (writer == null)
-        {
-            throw new ArgumentNullException(nameof(writer));
-        }
+        ArgumentNullException.ThrowIfNull(writer);
 
         var viewContext = ViewContext;
         _textWriterStack.Push(viewContext.Writer);
@@ -320,10 +312,7 @@ public abstract class RazorPageBase : IRazorPage
     /// <returns>The href for the contentPath.</returns>
     public virtual string Href(string contentPath)
     {
-        if (contentPath == null)
-        {
-            throw new ArgumentNullException(nameof(contentPath));
-        }
+        ArgumentNullException.ThrowIfNull(contentPath);
 
         if (_urlHelper == null)
         {
@@ -355,15 +344,8 @@ public abstract class RazorPageBase : IRazorPage
     /// <param name="section">The <see cref="RenderAsyncDelegate"/> to execute when rendering the section.</param>
     public virtual void DefineSection(string name, RenderAsyncDelegate section)
     {
-        if (name == null)
-        {
-            throw new ArgumentNullException(nameof(name));
-        }
-
-        if (section == null)
-        {
-            throw new ArgumentNullException(nameof(section));
-        }
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(section);
 
         if (SectionWriters.ContainsKey(name))
         {
@@ -472,15 +454,8 @@ public abstract class RazorPageBase : IRazorPage
         int suffixOffset,
         int attributeValuesCount)
     {
-        if (prefix == null)
-        {
-            throw new ArgumentNullException(nameof(prefix));
-        }
-
-        if (suffix == null)
-        {
-            throw new ArgumentNullException(nameof(suffix));
-        }
+        ArgumentNullException.ThrowIfNull(prefix);
+        ArgumentNullException.ThrowIfNull(suffix);
 
         _attributeInfo = new AttributeInfo(name, prefix, prefixOffset, suffix, suffixOffset, attributeValuesCount);
 
@@ -659,7 +634,7 @@ public abstract class RazorPageBase : IRazorPage
     }
 
     /// <summary>
-    /// Invokes <see cref="TextWriter.FlushAsync"/> on <see cref="Output"/> and <see cref="m:Stream.FlushAsync"/>
+    /// Invokes <see cref="TextWriter.FlushAsync()"/> on <see cref="Output"/> and <see cref="m:Stream.FlushAsync"/>
     /// on the response stream, writing out any buffered content to the <see cref="HttpResponse.Body"/>.
     /// </summary>
     /// <returns>A <see cref="Task{HtmlString}"/> that represents the asynchronous flush operation and on

@@ -22,6 +22,7 @@ namespace Microsoft.AspNetCore.E2ETesting;
 
 public class BrowserFixture : IAsyncLifetime
 {
+    public static string StreamingContext { get; } = "streaming";
     private readonly ConcurrentDictionary<string, Task<(IWebDriver browser, ILogs log)>> _browsers = new ConcurrentDictionary<string, Task<(IWebDriver, ILogs)>>();
 
     public BrowserFixture(IMessageSink diagnosticsMessageSink)
@@ -72,7 +73,7 @@ public class BrowserFixture : IAsyncLifetime
     public async Task DisposeAsync()
     {
         var browsers = await Task.WhenAll(_browsers.Values);
-        foreach (var (browser, log) in browsers)
+        foreach (var (browser, _) in browsers)
         {
             browser?.Quit();
             browser?.Dispose();
@@ -132,7 +133,6 @@ public class BrowserFixture : IAsyncLifetime
             createBrowserFunc = CreateBrowserAsync;
         }
 
-
         return _browsers.GetOrAdd(isolationContext, createBrowserFunc, output);
     }
 
@@ -142,6 +142,12 @@ public class BrowserFixture : IAsyncLifetime
     {
         var opts = new ChromeOptions();
 
+        if (string.Equals(context, StreamingContext, StringComparison.Ordinal))
+        {
+            // Tells Selenium not to wait until the page navigation has completed before continuing with the tests
+            opts.PageLoadStrategy = PageLoadStrategy.None;
+        }
+
         // Force language to english for tests
         opts.AddUserProfilePreference("intl.accept_languages", "en");
 
@@ -149,7 +155,7 @@ public class BrowserFixture : IAsyncLifetime
             !Debugger.IsAttached &&
             !string.Equals(Environment.GetEnvironmentVariable("E2E_TEST_VISIBLE"), "true", StringComparison.OrdinalIgnoreCase))
         {
-            opts.AddArgument("--headless");
+            opts.AddArgument("--headless=new");
         }
 
         opts.AddArgument("--no-sandbox");
@@ -218,7 +224,7 @@ public class BrowserFixture : IAsyncLifetime
         throw new InvalidOperationException("Couldn't create a Selenium remote driver client. The server is irresponsive", innerException);
     }
 
-    private string UserProfileDirectory(string context)
+    private static string UserProfileDirectory(string context)
     {
         if (string.IsNullOrEmpty(context))
         {
@@ -353,7 +359,7 @@ public class BrowserFixture : IAsyncLifetime
     }
 
     // This is a workaround for https://github.com/SeleniumHQ/selenium/issues/8229
-    private class RemoteWebDriverWithLogs : RemoteWebDriver, ISupportsLogs
+    private sealed class RemoteWebDriverWithLogs : RemoteWebDriver, ISupportsLogs
     {
         public RemoteWebDriverWithLogs(Uri remoteAddress, ICapabilities desiredCapabilities, TimeSpan commandTimeout)
             : base(remoteAddress, desiredCapabilities, commandTimeout)

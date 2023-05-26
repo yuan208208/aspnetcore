@@ -1,12 +1,9 @@
-﻿<Project DefaultTargets="Build">
-  <PropertyGroup>
-    <IsTestProject>true</IsTestProject>
-  </PropertyGroup>
-
+<Project DefaultTargets="Build">
   <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory), Directory.Build.props))\Directory.Build.props" />
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>
+    <InstallArgs>--check-files</InstallArgs>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,6 +13,8 @@
     -->
     <BuildOutputFiles Condition=" '$(Configuration)' == 'Debug' " Include="dist\Debug\blazor.server.js" />
     <BuildOutputFiles Condition=" '$(Configuration)' != 'Debug' " Include="dist\Release\blazor.server.js" />
+    <BuildOutputFiles Condition=" '$(Configuration)' == 'Debug' " Include="dist\Debug\blazor.web.js" />
+    <BuildOutputFiles Condition=" '$(Configuration)' != 'Debug' " Include="dist\Release\blazor.web.js" />
     <BuildOutputFiles Condition=" '$(Configuration)' == 'Debug' " Include="dist\Debug\blazor.webassembly.js" />
     <BuildOutputFiles Condition=" '$(Configuration)' != 'Debug' " Include="dist\Release\blazor.webassembly.js" />
     <BuildOutputFiles Condition=" '$(Configuration)' == 'Debug' " Include="dist\Debug\blazor.webview.js" />

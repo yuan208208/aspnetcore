@@ -1,11 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
-using Xunit;
 
 namespace Microsoft.Net.Http.Headers;
 
@@ -242,11 +238,16 @@ public class ContentDispositionHeaderValueTest
     [InlineData("FileName.bat", "FileName.bat")]
     [InlineData("FileÃName.bat", "File_Name.bat")]
     [InlineData("File\nName.bat", "File_Name.bat")]
+    [InlineData("File\x19Name.bat", "File_Name.bat")]
+    [InlineData("File\x20Name.bat", "File\x20Name.bat")] // First unsanitized
+    [InlineData("File\x7eName.bat", "File\x7eName.bat")] // Last unsanitized
+    [InlineData("File\x7fName.bat", "File_Name.bat")]
     public void SetHttpFileName_ShouldSanitizeFileNameWhereNeeded(string httpFileName, string expectedFileName)
     {
         var contentDisposition = new ContentDispositionHeaderValue("inline");
         contentDisposition.SetHttpFileName(httpFileName);
         Assert.Equal(expectedFileName, contentDisposition.FileName);
+        Assert.Equal(httpFileName, contentDisposition.FileNameStar); // Should roundtrip through FileNameStar encoding
     }
 
     [Fact]

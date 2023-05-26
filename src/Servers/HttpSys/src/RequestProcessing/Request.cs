@@ -1,25 +1,24 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Net;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
-using System.Threading;
-using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpSys.Internal;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
 
 namespace Microsoft.AspNetCore.Server.HttpSys;
 
-internal sealed class Request
+internal sealed partial class Request
 {
     private X509Certificate2? _clientCert;
     // TODO: https://github.com/aspnet/HttpSysServer/issues/231
@@ -63,6 +62,7 @@ internal sealed class Request
 
         PathBase = string.Empty;
         Path = originalPath;
+        var prefix = requestContext.Server.Options.UrlPrefixes.GetPrefix((int)requestContext.UrlContext);
 
         // 'OPTIONS * HTTP/1.1'
         if (KnownMethod == HttpApiTypes.HTTP_VERB.HttpVerbOPTIONS && string.Equals(RawUrl, "*", StringComparison.Ordinal))
@@ -70,31 +70,97 @@ internal sealed class Request
             PathBase = string.Empty;
             Path = string.Empty;
         }
-        else
+        // Prefix may be null if the requested has been transfered to our queue
+        else if (prefix is not null)
         {
-            var prefix = requestContext.Server.Options.UrlPrefixes.GetPrefix((int)requestContext.UrlContext);
-            // Prefix may be null if the requested has been transfered to our queue
-            if (!(prefix is null))
+            var pathBase = prefix.PathWithoutTrailingSlash;
+
+            // url: /base/path, prefix: /base/, base: /base, path: /path
+            // url: /, prefix: /, base: , path: /
+            if (originalPath.Equals(pathBase, StringComparison.Ordinal))
             {
-                if (originalPath.Length == prefix.PathWithoutTrailingSlash.Length)
-                {
-                    // They matched exactly except for the trailing slash.
-                    PathBase = originalPath;
-                    Path = string.Empty;
-                }
-                else
-                {
-                    // url: /base/path, prefix: /base/, base: /base, path: /path
-                    // url: /, prefix: /, base: , path: /
-                    PathBase = originalPath.Substring(0, prefix.PathWithoutTrailingSlash.Length); // Preserve the user input casing
-                    Path = originalPath.Substring(prefix.PathWithoutTrailingSlash.Length);
-                }
-            }
-            else if (requestContext.Server.Options.UrlPrefixes.TryMatchLongestPrefix(IsHttps, cookedUrl.GetHost()!, originalPath, out var pathBase, out var path))
-            {
+                // Exact match, no need to preserve the casing
                 PathBase = pathBase;
-                Path = path;
+                Path = string.Empty;
             }
+            else if (originalPath.Equals(pathBase, StringComparison.OrdinalIgnoreCase))
+            {
+                // Preserve the user input casing
+                PathBase = originalPath;
+                Path = string.Empty;
+            }
+            else if (originalPath.StartsWith(prefix.Path, StringComparison.Ordinal))
+            {
+                // Exact match, no need to preserve the casing
+                PathBase = pathBase;
+                Path = originalPath[pathBase.Length..];
+            }
+            else if (originalPath.StartsWith(prefix.Path, StringComparison.OrdinalIgnoreCase))
+            {
+                // Preserve the user input casing
+                PathBase = originalPath[..pathBase.Length];
+                Path = originalPath[pathBase.Length..];
+            }
+            else
+            {
+                // Http.Sys path base matching is based on the cooked url which applies some non-standard normalizations that we don't use
+                // like collapsing duplicate slashes "//", converting '\' to '/', and un-escaping "%2F" to '/'. Find the right split and
+                // ignore the normalizations.
+                var originalOffset = 0;
+                var baseOffset = 0;
+                while (originalOffset < originalPath.Length && baseOffset < pathBase.Length)
+                {
+                    var baseValue = pathBase[baseOffset];
+                    var offsetValue = originalPath[originalOffset];
+                    if (baseValue == offsetValue
+                        || char.ToUpperInvariant(baseValue) == char.ToUpperInvariant(offsetValue))
+                    {
+                        // case-insensitive match, continue
+                        originalOffset++;
+                        baseOffset++;
+                    }
+                    else if (baseValue == '/' && offsetValue == '\\')
+                    {
+                        // Http.Sys considers these equivalent
+                        originalOffset++;
+                        baseOffset++;
+                    }
+                    else if (baseValue == '/' && originalPath.AsSpan(originalOffset).StartsWith("%2F", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Http.Sys un-escapes this
+                        originalOffset += 3;
+                        baseOffset++;
+                    }
+                    else if (baseOffset > 0 && pathBase[baseOffset - 1] == '/'
+                        && (offsetValue == '/' || offsetValue == '\\'))
+                    {
+                        // Duplicate slash, skip
+                        originalOffset++;
+                    }
+                    else if (baseOffset > 0 && pathBase[baseOffset - 1] == '/'
+                        && originalPath.AsSpan(originalOffset).StartsWith("%2F", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Duplicate slash equivalent, skip
+                        originalOffset += 3;
+                    }
+                    else
+                    {
+                        // Mismatch, fall back
+                        // The failing test case here is "/base/call//../bat//path1//path2", reduced to "/base/call/bat//path1//path2",
+                        // where http.sys collapses "//" before "../", but we do "../" first. We've lost the context that there were dot segments,
+                        // or duplicate slashes, how do we figure out that "call/" can be eliminated?
+                        originalOffset = 0;
+                        break;
+                    }
+                }
+                PathBase = originalPath[..originalOffset];
+                Path = originalPath[originalOffset..];
+            }
+        }
+        else if (requestContext.Server.Options.UrlPrefixes.TryMatchLongestPrefix(IsHttps, cookedUrl.GetHost()!, originalPath, out var pathBase, out var path))
+        {
+            PathBase = pathBase;
+            Path = path;
         }
 
         ProtocolVersion = RequestContext.GetVersion();
@@ -113,6 +179,8 @@ internal sealed class Request
         // Finished directly accessing the HTTP_REQUEST structure.
         RequestContext.ReleasePins();
         // TODO: Verbose log parameters
+
+        RemoveContentLengthIfTransferEncodingContainsChunked();
     }
 
     internal ulong UConnectionId { get; }
@@ -120,7 +188,7 @@ internal sealed class Request
     internal ulong RawConnectionId { get; }
 
     // No ulongs in public APIs...
-    public long ConnectionId => (long)RawConnectionId;
+    public long ConnectionId => RawConnectionId != 0 ? (long)RawConnectionId : (long)UConnectionId;
 
     internal ulong RequestId { get; }
 
@@ -139,7 +207,7 @@ internal sealed class Request
             {
                 // Note Http.Sys adds the Transfer-Encoding: chunked header to HTTP/2 requests with bodies for back compat.
                 var transferEncoding = Headers[HeaderNames.TransferEncoding].ToString();
-                if (string.Equals("chunked", transferEncoding.Trim(), StringComparison.OrdinalIgnoreCase))
+                if (IsChunked(transferEncoding))
                 {
                     _contentBoundaryType = BoundaryType.Chunked;
                 }
@@ -255,7 +323,7 @@ internal sealed class Request
     public string Scheme => IsHttps ? Constants.HttpsScheme : Constants.HttpScheme;
 
     // HTTP.Sys allows you to upgrade anything to opaque unless content-length > 0 or chunked are specified.
-    internal bool IsUpgradable => ProtocolVersion < HttpVersion.Version20 && !HasEntityBody && ComNetOS.IsWin8orLater;
+    internal bool IsUpgradable => ProtocolVersion == HttpVersion.Version11 && !HasEntityBody && ComNetOS.IsWin8orLater;
 
     internal WindowsPrincipal User { get; }
 
@@ -285,6 +353,37 @@ internal sealed class Request
         }
     }
 
+    public ReadOnlySpan<long> RequestTimestamps
+    {
+        get
+        {
+            /*
+                Below is the definition of the timing info structure we are accessing the memory for.
+                ULONG is 32-bit and maps to int. ULONGLONG is 64-bit and maps to long.
+
+                typedef struct _HTTP_REQUEST_TIMING_INFO
+                {
+                    ULONG RequestTimingCount;
+                    ULONGLONG RequestTiming[HttpRequestTimingTypeMax];
+
+                } HTTP_REQUEST_TIMING_INFO, *PHTTP_REQUEST_TIMING_INFO;
+            */
+
+            if (!RequestInfo.TryGetValue((int)HttpApiTypes.HTTP_REQUEST_INFO_TYPE.HttpRequestInfoTypeRequestTiming, out var timingInfo))
+            {
+                return ReadOnlySpan<long>.Empty;
+            }
+
+            var timingCount = MemoryMarshal.Read<int>(timingInfo.Span);
+
+            // Note that even though RequestTimingCount is an int, the compiler enforces alignment of data in the struct which causes 4 bytes
+            // of padding to be added after RequestTimingCount, so we need to skip 64-bits before we get to the start of the RequestTiming array
+            return MemoryMarshal.CreateReadOnlySpan(
+                ref Unsafe.As<byte, long>(ref MemoryMarshal.GetReference(timingInfo.Span.Slice(sizeof(long)))),
+                timingCount);
+        }
+    }
+
     private void GetTlsHandshakeResults()
     {
         var handshake = RequestContext.GetTlsHandshake();
@@ -292,7 +391,7 @@ internal sealed class Request
         Protocol = handshake.Protocol;
         // The OS considers client and server TLS as different enum values. SslProtocols choose to combine those for some reason.
         // We need to fill in the client bits so the enum shows the expected protocol.
-        // https://docs.microsoft.com/windows/desktop/api/schannel/ns-schannel-_secpkgcontext_connectioninfo
+        // https://learn.microsoft.com/windows/desktop/api/schannel/ns-schannel-_secpkgcontext_connectioninfo
         // Compare to https://referencesource.microsoft.com/#System/net/System/Net/SecureProtocols/_SslState.cs,8905d1bf17729de3
 #pragma warning disable CS0618 // Type or member is obsolete
         if ((Protocol & SslProtocols.Ssl2) != 0)
@@ -303,7 +402,8 @@ internal sealed class Request
         {
             Protocol |= SslProtocols.Ssl3;
         }
-#pragma warning restore CS0618 // Type or member is obsolete
+#pragma warning restore CS0618 // Type or Prmember is obsolete
+#pragma warning disable SYSLIB0039 // TLS 1.0 and 1.1 are obsolete
         if ((Protocol & SslProtocols.Tls) != 0)
         {
             Protocol |= SslProtocols.Tls;
@@ -312,6 +412,7 @@ internal sealed class Request
         {
             Protocol |= SslProtocols.Tls11;
         }
+#pragma warning restore SYSLIB0039
         if ((Protocol & SslProtocols.Tls12) != 0)
         {
             Protocol |= SslProtocols.Tls12;
@@ -385,10 +486,7 @@ internal sealed class Request
         }
         catch (Exception)
         {
-            if (certLoader != null)
-            {
-                certLoader.Dispose();
-            }
+            certLoader?.Dispose();
             throw;
         }
         return _clientCert;
@@ -456,14 +554,52 @@ internal sealed class Request
         _nativeStream.SwitchToOpaqueMode();
     }
 
-    private static class Log
+    private static partial class Log
     {
-        private static readonly Action<ILogger, Exception?> _errorInReadingCertificate =
-            LoggerMessage.Define(LogLevel.Debug, LoggerEventIds.ErrorInReadingCertificate, "An error occurred reading the client certificate.");
+        [LoggerMessage(LoggerEventIds.ErrorInReadingCertificate, LogLevel.Debug, "An error occurred reading the client certificate.", EventName = "ErrorInReadingCertificate")]
+        public static partial void ErrorInReadingCertificate(ILogger logger, Exception exception);
+    }
 
-        public static void ErrorInReadingCertificate(ILogger logger, Exception exception)
+    private void RemoveContentLengthIfTransferEncodingContainsChunked()
+    {
+        if (StringValues.IsNullOrEmpty(Headers.ContentLength)) { return; }
+
+        var transferEncoding = Headers[HeaderNames.TransferEncoding].ToString();
+        if (!IsChunked(transferEncoding))
         {
-            _errorInReadingCertificate(logger, exception);
+            return;
         }
+
+        // https://datatracker.ietf.org/doc/html/rfc7230#section-3.3.2
+        // A sender MUST NOT send a Content-Length header field in any message
+        // that contains a Transfer-Encoding header field.
+        // https://datatracker.ietf.org/doc/html/rfc7230#section-3.3.3
+        // If a message is received with both a Transfer-Encoding and a
+        // Content-Length header field, the Transfer-Encoding overrides the
+        // Content-Length.  Such a message might indicate an attempt to
+        // perform request smuggling (Section 9.5) or response splitting
+        // (Section 9.4) and ought to be handled as an error.  A sender MUST
+        // remove the received Content-Length field prior to forwarding such
+        // a message downstream.
+        // We should remove the Content-Length request header in this case, for compatibility
+        // reasons, include X-Content-Length so that the original Content-Length is still available.
+        IHeaderDictionary headerDictionary = Headers;
+        headerDictionary.Add("X-Content-Length", headerDictionary[HeaderNames.ContentLength]);
+        Headers.ContentLength = StringValues.Empty;
+    }
+
+    private static bool IsChunked(string? transferEncoding)
+    {
+        if (transferEncoding is null)
+        {
+            return false;
+        }
+
+        var index = transferEncoding.LastIndexOf(',');
+        if (transferEncoding.AsSpan().Slice(index + 1).Trim().Equals("chunked", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return false;
     }
 }

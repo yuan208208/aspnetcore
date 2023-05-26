@@ -4,8 +4,8 @@
 using System;
 using System.Collections.Generic;
 using System.Security.Claims;
-using System.Security.Principal;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Shared;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -34,30 +34,12 @@ public class DefaultAuthorizationService : IAuthorizationService
     /// <param name="options">The <see cref="AuthorizationOptions"/> used.</param>
     public DefaultAuthorizationService(IAuthorizationPolicyProvider policyProvider, IAuthorizationHandlerProvider handlers, ILogger<DefaultAuthorizationService> logger, IAuthorizationHandlerContextFactory contextFactory, IAuthorizationEvaluator evaluator, IOptions<AuthorizationOptions> options)
     {
-        if (options == null)
-        {
-            throw new ArgumentNullException(nameof(options));
-        }
-        if (policyProvider == null)
-        {
-            throw new ArgumentNullException(nameof(policyProvider));
-        }
-        if (handlers == null)
-        {
-            throw new ArgumentNullException(nameof(handlers));
-        }
-        if (logger == null)
-        {
-            throw new ArgumentNullException(nameof(logger));
-        }
-        if (contextFactory == null)
-        {
-            throw new ArgumentNullException(nameof(contextFactory));
-        }
-        if (evaluator == null)
-        {
-            throw new ArgumentNullException(nameof(evaluator));
-        }
+        ArgumentNullThrowHelper.ThrowIfNull(options);
+        ArgumentNullThrowHelper.ThrowIfNull(policyProvider);
+        ArgumentNullThrowHelper.ThrowIfNull(handlers);
+        ArgumentNullThrowHelper.ThrowIfNull(logger);
+        ArgumentNullThrowHelper.ThrowIfNull(contextFactory);
+        ArgumentNullThrowHelper.ThrowIfNull(evaluator);
 
         _options = options.Value;
         _handlers = handlers;
@@ -79,16 +61,13 @@ public class DefaultAuthorizationService : IAuthorizationService
     /// </returns>
     public virtual async Task<AuthorizationResult> AuthorizeAsync(ClaimsPrincipal user, object? resource, IEnumerable<IAuthorizationRequirement> requirements)
     {
-        if (requirements == null)
-        {
-            throw new ArgumentNullException(nameof(requirements));
-        }
+        ArgumentNullThrowHelper.ThrowIfNull(requirements);
 
         var authContext = _contextFactory.CreateContext(requirements, user, resource);
-        var handlers = await _handlers.GetHandlersAsync(authContext);
+        var handlers = await _handlers.GetHandlersAsync(authContext).ConfigureAwait(false);
         foreach (var handler in handlers)
         {
-            await handler.HandleAsync(authContext);
+            await handler.HandleAsync(authContext).ConfigureAwait(false);
             if (!_options.InvokeHandlersAfterFailure && authContext.HasFailed)
             {
                 break;
@@ -102,7 +81,7 @@ public class DefaultAuthorizationService : IAuthorizationService
         }
         else
         {
-            _logger.UserAuthorizationFailed(result.Failure!);
+            _logger.UserAuthorizationFailed(result.Failure);
         }
         return result;
     }
@@ -119,16 +98,13 @@ public class DefaultAuthorizationService : IAuthorizationService
     /// </returns>
     public virtual async Task<AuthorizationResult> AuthorizeAsync(ClaimsPrincipal user, object? resource, string policyName)
     {
-        if (policyName == null)
-        {
-            throw new ArgumentNullException(nameof(policyName));
-        }
+        ArgumentNullThrowHelper.ThrowIfNull(policyName);
 
-        var policy = await _policyProvider.GetPolicyAsync(policyName);
+        var policy = await _policyProvider.GetPolicyAsync(policyName).ConfigureAwait(false);
         if (policy == null)
         {
             throw new InvalidOperationException($"No policy found: {policyName}.");
         }
-        return await this.AuthorizeAsync(user, resource, policy);
+        return await this.AuthorizeAsync(user, resource, policy).ConfigureAwait(false);
     }
 }

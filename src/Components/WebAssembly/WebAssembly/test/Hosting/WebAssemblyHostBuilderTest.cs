@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Components.Routing;
@@ -11,7 +9,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.JSInterop;
 using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 
@@ -23,12 +20,12 @@ public class WebAssemblyHostBuilderTest
     public void Build_AllowsConfiguringConfiguration()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(), JsonOptions);
 
         builder.Configuration.AddInMemoryCollection(new[]
         {
-                new KeyValuePair<string, string>("key", "value"),
-            });
+            new KeyValuePair<string, string>("key", "value"),
+        });
 
         // Act
         var host = builder.Build();
@@ -41,7 +38,7 @@ public class WebAssemblyHostBuilderTest
     public void Build_AllowsConfiguringServices()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(), JsonOptions);
 
         // This test also verifies that we create a scope.
         builder.Services.AddScoped<StringBuilder>();
@@ -57,7 +54,7 @@ public class WebAssemblyHostBuilderTest
     public void Build_AllowsConfiguringContainer()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(), JsonOptions);
 
         builder.Services.AddScoped<StringBuilder>();
         var factory = new MyFakeServiceProviderFactory();
@@ -75,7 +72,7 @@ public class WebAssemblyHostBuilderTest
     public void Build_AllowsConfiguringContainer_WithDelegate()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(), JsonOptions);
 
         builder.Services.AddScoped<StringBuilder>();
 
@@ -98,7 +95,7 @@ public class WebAssemblyHostBuilderTest
     public void Build_InDevelopment_ConfiguresWithServiceProviderWithScopeValidation()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(environment: "Development"), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(environment: "Development"), JsonOptions);
 
         builder.Services.AddScoped<StringBuilder>();
         builder.Services.AddSingleton<TestServiceThatTakesStringBuilder>();
@@ -115,7 +112,7 @@ public class WebAssemblyHostBuilderTest
     public void Build_InProduction_ConfiguresWithServiceProviderWithScopeValidation()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(), JsonOptions);
 
         builder.Services.AddScoped<StringBuilder>();
         builder.Services.AddSingleton<TestServiceThatTakesStringBuilder>();
@@ -132,7 +129,7 @@ public class WebAssemblyHostBuilderTest
     public void Builder_InDevelopment_SetsHostEnvironmentProperty()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(environment: "Development"), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(environment: "Development"), JsonOptions);
 
         // Assert
         Assert.NotNull(builder.HostEnvironment);
@@ -143,7 +140,7 @@ public class WebAssemblyHostBuilderTest
     public void Builder_CreatesNavigationManager()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(environment: "Development"), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(environment: "Development"), JsonOptions);
 
         // Act
         var host = builder.Build();
@@ -159,7 +156,6 @@ public class WebAssemblyHostBuilderTest
     {
         public TestServiceThatTakesStringBuilder(StringBuilder builder) { }
     }
-
 
     private class MyFakeDIBuilderThing
     {
@@ -194,7 +190,7 @@ public class WebAssemblyHostBuilderTest
     public void Build_AddsConfigurationToServices()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(), JsonOptions);
 
         builder.Configuration.AddInMemoryCollection(new[]
         {
@@ -229,7 +225,7 @@ public class WebAssemblyHostBuilderTest
     public void Constructor_AddsDefaultServices()
     {
         // Arrange & Act
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(), JsonOptions);
 
         foreach (var type in DefaultServiceTypes)
         {
@@ -241,7 +237,7 @@ public class WebAssemblyHostBuilderTest
     public void Builder_SupportsConfiguringLogging()
     {
         // Arrange
-        var builder = new WebAssemblyHostBuilder(new TestJSUnmarshalledRuntime(), JsonOptions);
+        var builder = new WebAssemblyHostBuilder(new TestInternalJSImportMethods(), JsonOptions);
         var provider = new Mock<ILoggerProvider>();
 
         // Act

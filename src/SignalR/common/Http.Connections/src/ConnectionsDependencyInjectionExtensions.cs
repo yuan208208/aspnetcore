@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.Http.Connections.Internal;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -26,6 +25,7 @@ public static class ConnectionsDependencyInjectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IConfigureOptions<ConnectionOptions>, ConnectionOptionsSetup>());
         services.TryAddSingleton<HttpConnectionDispatcher>();
         services.TryAddSingleton<HttpConnectionManager>();
+        services.TryAddSingleton<HttpConnectionsMetrics>();
         return services;
     }
 

@@ -1,22 +1,17 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading.Tasks;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Mvc.Formatters;
 
-public class SystemTextJsonOutputFormatterTest : JsonOutputFormatterTestBase
+public partial class SystemTextJsonOutputFormatterTest : JsonOutputFormatterTestBase
 {
     protected override TextOutputFormatter GetOutputFormatter()
     {
@@ -27,8 +22,10 @@ public class SystemTextJsonOutputFormatterTest : JsonOutputFormatterTestBase
     public async Task WriteResponseBodyAsync_AllowsConfiguringPreserveReferenceHandling()
     {
         // Arrange
-        var formatter = GetOutputFormatter();
-        ((SystemTextJsonOutputFormatter)formatter).SerializerOptions.ReferenceHandler = ReferenceHandler.Preserve;
+        var jsonOptions = new JsonOptions();
+        jsonOptions.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.Preserve;
+
+        var formatter = SystemTextJsonOutputFormatter.CreateFormatter(jsonOptions);
         var expectedContent = "{\"$id\":\"1\",\"name\":\"Person\",\"child\":{\"$id\":\"2\",\"name\":\"Child\",\"child\":null,\"parent\":{\"$ref\":\"1\"}},\"parent\":null}";
         var person = new Person
         {
@@ -162,6 +159,110 @@ public class SystemTextJsonOutputFormatterTest : JsonOutputFormatterTestBase
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task WriteResponseBodyAsync_UsesJsonPolymorphismOptions(bool useJsonContext)
+    {
+        // Arrange
+        var jsonOptions = new JsonOptions();
+
+        if (useJsonContext)
+        {
+            jsonOptions.JsonSerializerOptions.TypeInfoResolver = TestJsonContext.Default;
+        }
+
+        var formatter = SystemTextJsonOutputFormatter.CreateFormatter(jsonOptions);
+        var expectedContent = "{\"$type\":\"JsonPersonExtended\",\"age\":99,\"name\":\"Person\",\"child\":null,\"parent\":null}";
+        JsonPerson person = new JsonPersonExtended()
+        {
+            Name = "Person",
+            Age = 99,
+        };
+
+        var mediaType = MediaTypeHeaderValue.Parse("application/json; charset=utf-8");
+        var encoding = CreateOrGetSupportedEncoding(formatter, "utf-8", isDefaultEncoding: true);
+
+        var body = new MemoryStream();
+        var actionContext = GetActionContext(mediaType, body);
+
+        var outputFormatterContext = new OutputFormatterWriteContext(
+            actionContext.HttpContext,
+            new TestHttpResponseStreamWriterFactory().CreateWriter,
+            typeof(JsonPerson),
+            person)
+        {
+            ContentType = new StringSegment(mediaType.ToString()),
+        };
+
+        // Act
+        await formatter.WriteResponseBodyAsync(outputFormatterContext, Encoding.GetEncoding("utf-8"));
+
+        // Assert
+        var actualContent = encoding.GetString(body.ToArray());
+        Assert.Equal(expectedContent, actualContent);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task WriteResponseBodyAsync_UsesJsonPolymorphismOptions_WithUnspeakableTypes(bool useJsonContext)
+    {
+        // Arrange
+        var jsonOptions = new JsonOptions();
+
+        if (useJsonContext)
+        {
+            jsonOptions.JsonSerializerOptions.TypeInfoResolver = TestJsonContext.Default;
+        }
+
+        var formatter = SystemTextJsonOutputFormatter.CreateFormatter(jsonOptions);
+        var expectedContent = """[{"name":"One","child":null,"parent":null},{"$type":"JsonPersonExtended","age":99,"name":"Two","child":null,"parent":null}]""";
+        var people = GetPeopleAsync();
+
+        var mediaType = MediaTypeHeaderValue.Parse("application/json; charset=utf-8");
+        var encoding = CreateOrGetSupportedEncoding(formatter, "utf-8", isDefaultEncoding: true);
+
+        var body = new MemoryStream();
+        var actionContext = GetActionContext(mediaType, body);
+
+        var outputFormatterContext = new OutputFormatterWriteContext(
+            actionContext.HttpContext,
+            new TestHttpResponseStreamWriterFactory().CreateWriter,
+            typeof(IAsyncEnumerable<JsonPerson>),
+            people)
+        {
+            ContentType = new StringSegment(mediaType.ToString()),
+        };
+
+        // Act
+        await formatter.WriteResponseBodyAsync(outputFormatterContext, Encoding.GetEncoding("utf-8"));
+
+        // Assert
+        var actualContent = encoding.GetString(body.ToArray());
+        Assert.Equal(expectedContent, actualContent);
+    }
+
+    private static async IAsyncEnumerable<JsonPerson> GetPeopleAsync()
+    {
+        yield return new JsonPerson() { Name = "One" };
+
+        // ensure this is async
+        await Task.Yield();
+
+        yield return new JsonPersonExtended() { Name = "Two", Age = 99 };
+    }
+
+    [Fact]
+    public void WriteResponseBodyAsync_Throws_WhenTypeResolverIsNull()
+    {
+        // Arrange
+        var jsonOptions = new JsonOptions();
+        jsonOptions.JsonSerializerOptions.TypeInfoResolver = null;
+
+        Assert.Throws<InvalidOperationException>(() => SystemTextJsonOutputFormatter.CreateFormatter(jsonOptions));
+    }
+
     private class Person
     {
         public string Name { get; set; }
@@ -171,11 +272,24 @@ public class SystemTextJsonOutputFormatterTest : JsonOutputFormatterTestBase
         public Person Parent { get; set; }
     }
 
+    [JsonPolymorphic]
+    [JsonDerivedType(typeof(JsonPersonExtended), nameof(JsonPersonExtended))]
+    private class JsonPerson : Person
+    { }
+
+    private class JsonPersonExtended : JsonPerson
+    {
+        public int Age { get; set; }
+    }
+
+    [JsonSerializable(typeof(JsonPerson))]
+    [JsonSerializable(typeof(IAsyncEnumerable<JsonPerson>))]
+    private partial class TestJsonContext : JsonSerializerContext
+    { }
+
     [JsonConverter(typeof(ThrowingFormatterPersonConverter))]
     private class ThrowingFormatterModel
-    {
-
-    }
+    { }
 
     private class ThrowingFormatterPersonConverter : JsonConverter<ThrowingFormatterModel>
     {

@@ -1,20 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Buffers;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Globalization;
-using System.IO;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.Net.Http.Headers;
 
 namespace Microsoft.AspNetCore.HttpLogging;
 
@@ -38,18 +28,11 @@ internal sealed class HttpLoggingMiddleware
     /// <param name="logger"></param>
     public HttpLoggingMiddleware(RequestDelegate next, IOptionsMonitor<HttpLoggingOptions> options, ILogger<HttpLoggingMiddleware> logger)
     {
-        _next = next ?? throw new ArgumentNullException(nameof(next));
+        ArgumentNullException.ThrowIfNull(next);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(logger);
 
-        if (options == null)
-        {
-            throw new ArgumentNullException(nameof(options));
-        }
-
-        if (logger == null)
-        {
-            throw new ArgumentNullException(nameof(logger));
-        }
-
+        _next = next;
         _options = options;
         _logger = logger;
     }
@@ -76,60 +59,73 @@ internal sealed class HttpLoggingMiddleware
         RequestBufferingStream? requestBufferingStream = null;
         Stream? originalBody = null;
 
-        if ((HttpLoggingFields.Request & options.LoggingFields) != HttpLoggingFields.None)
+        var loggingAttribute = context.GetEndpoint()?.Metadata.GetMetadata<HttpLoggingAttribute>();
+        var loggingFields = loggingAttribute?.LoggingFields ?? options.LoggingFields;
+
+        if ((HttpLoggingFields.Request & loggingFields) != HttpLoggingFields.None)
         {
             var request = context.Request;
             var list = new List<KeyValuePair<string, object?>>(
                 request.Headers.Count + DefaultRequestFieldsMinusHeaders);
 
-            if (options.LoggingFields.HasFlag(HttpLoggingFields.RequestProtocol))
+            if (loggingFields.HasFlag(HttpLoggingFields.RequestProtocol))
             {
                 AddToList(list, nameof(request.Protocol), request.Protocol);
             }
 
-            if (options.LoggingFields.HasFlag(HttpLoggingFields.RequestMethod))
+            if (loggingFields.HasFlag(HttpLoggingFields.RequestMethod))
             {
                 AddToList(list, nameof(request.Method), request.Method);
             }
 
-            if (options.LoggingFields.HasFlag(HttpLoggingFields.RequestScheme))
+            if (loggingFields.HasFlag(HttpLoggingFields.RequestScheme))
             {
                 AddToList(list, nameof(request.Scheme), request.Scheme);
             }
 
-            if (options.LoggingFields.HasFlag(HttpLoggingFields.RequestPath))
+            if (loggingFields.HasFlag(HttpLoggingFields.RequestPath))
             {
                 AddToList(list, nameof(request.PathBase), request.PathBase);
                 AddToList(list, nameof(request.Path), request.Path);
             }
 
-            if (options.LoggingFields.HasFlag(HttpLoggingFields.RequestQuery))
+            if (loggingFields.HasFlag(HttpLoggingFields.RequestQuery))
             {
                 AddToList(list, nameof(request.QueryString), request.QueryString.Value);
             }
 
-            if (options.LoggingFields.HasFlag(HttpLoggingFields.RequestHeaders))
+            if (loggingFields.HasFlag(HttpLoggingFields.RequestHeaders))
             {
                 FilterHeaders(list, request.Headers, options._internalRequestHeaders);
             }
 
-            if (options.LoggingFields.HasFlag(HttpLoggingFields.RequestBody))
+            if (loggingFields.HasFlag(HttpLoggingFields.RequestBody))
             {
-                if (MediaTypeHelpers.TryGetEncodingForMediaType(request.ContentType,
+                if (request.ContentType is null)
+                {
+                    _logger.NoMediaType("request");
+                }
+                else if (MediaTypeHelpers.TryGetEncodingForMediaType(request.ContentType,
                     options.MediaTypeOptions.MediaTypeStates,
                     out var encoding))
                 {
+                    var requestBodyLogLimit = options.RequestBodyLogLimit;
+                    if (loggingAttribute?.IsRequestBodyLogLimitSet is true)
+                    {
+                        requestBodyLogLimit = loggingAttribute.RequestBodyLogLimit;
+                    }
+
                     originalBody = request.Body;
                     requestBufferingStream = new RequestBufferingStream(
                         request.Body,
-                        options.RequestBodyLogLimit,
+                        requestBodyLogLimit,
                         _logger,
                         encoding);
                     request.Body = requestBufferingStream;
                 }
                 else
                 {
-                    _logger.UnrecognizedMediaType();
+                    _logger.UnrecognizedMediaType("request");
                 }
             }
 
@@ -141,21 +137,43 @@ internal sealed class HttpLoggingMiddleware
         ResponseBufferingStream? responseBufferingStream = null;
         IHttpResponseBodyFeature? originalBodyFeature = null;
 
+        UpgradeFeatureLoggingDecorator? loggableUpgradeFeature = null;
+        IHttpUpgradeFeature? originalUpgradeFeature = null;
+
         try
         {
             var response = context.Response;
 
-            if (options.LoggingFields.HasFlag(HttpLoggingFields.ResponseBody))
+            if (loggingFields.HasFlag(HttpLoggingFields.ResponseStatusCode) || loggingFields.HasFlag(HttpLoggingFields.ResponseHeaders))
+            {
+                originalUpgradeFeature = context.Features.Get<IHttpUpgradeFeature>();
+
+                if (originalUpgradeFeature != null && originalUpgradeFeature.IsUpgradableRequest)
+                {
+                    loggableUpgradeFeature = new UpgradeFeatureLoggingDecorator(originalUpgradeFeature, response, options._internalResponseHeaders, loggingFields, _logger);
+
+                    context.Features.Set<IHttpUpgradeFeature>(loggableUpgradeFeature);
+                }
+            }
+
+            if (loggingFields.HasFlag(HttpLoggingFields.ResponseBody))
             {
                 originalBodyFeature = context.Features.Get<IHttpResponseBodyFeature>()!;
 
+                var responseBodyLogLimit = options.ResponseBodyLogLimit;
+                if (loggingAttribute?.IsRequestBodyLogLimitSet is true)
+                {
+                    responseBodyLogLimit = loggingAttribute.ResponseBodyLogLimit;
+                }
+
                 // TODO pool these.
                 responseBufferingStream = new ResponseBufferingStream(originalBodyFeature,
-                    options.ResponseBodyLogLimit,
+                    responseBodyLogLimit,
                     _logger,
                     context,
                     options.MediaTypeOptions.MediaTypeStates,
-                    options);
+                    options._internalResponseHeaders,
+                    loggingFields);
                 response.Body = responseBufferingStream;
                 context.Features.Set<IHttpResponseBodyFeature>(responseBufferingStream);
             }
@@ -169,10 +187,10 @@ internal sealed class HttpLoggingMiddleware
                 requestBufferingStream.LogRequestBody();
             }
 
-            if (responseBufferingStream == null || responseBufferingStream.FirstWrite == false)
+            if (ResponseHeadersNotYetWritten(responseBufferingStream, loggableUpgradeFeature))
             {
-                // No body, write headers here.
-                LogResponseHeaders(response, options, _logger);
+                // No body, not an upgradable request or request not upgraded, write headers here.
+                LogResponseHeaders(response, loggingFields, options._internalResponseHeaders, _logger);
             }
 
             if (responseBufferingStream != null)
@@ -199,7 +217,27 @@ internal sealed class HttpLoggingMiddleware
             {
                 context.Request.Body = originalBody;
             }
+
+            if (loggableUpgradeFeature != null)
+            {
+                context.Features.Set(originalUpgradeFeature);
+            }
         }
+    }
+
+    private static bool ResponseHeadersNotYetWritten(ResponseBufferingStream? responseBufferingStream, UpgradeFeatureLoggingDecorator? upgradeFeatureLogging)
+    {
+        return BodyNotYetWritten(responseBufferingStream) && NotUpgradeableRequestOrRequestNotUpgraded(upgradeFeatureLogging);
+    }
+
+    private static bool BodyNotYetWritten(ResponseBufferingStream? responseBufferingStream)
+    {
+        return responseBufferingStream == null || responseBufferingStream.HeadersWritten == false;
+    }
+
+    private static bool NotUpgradeableRequestOrRequestNotUpgraded(UpgradeFeatureLoggingDecorator? upgradeFeatureLogging)
+    {
+        return upgradeFeatureLogging == null || !upgradeFeatureLogging.IsUpgraded;
     }
 
     private static void AddToList(List<KeyValuePair<string, object?>> list, string key, string? value)
@@ -207,24 +245,27 @@ internal sealed class HttpLoggingMiddleware
         list.Add(new KeyValuePair<string, object?>(key, value));
     }
 
-    public static void LogResponseHeaders(HttpResponse response, HttpLoggingOptions options, ILogger logger)
+    public static void LogResponseHeaders(HttpResponse response, HttpLoggingFields loggingFields, HashSet<string> allowedResponseHeaders, ILogger logger)
     {
         var list = new List<KeyValuePair<string, object?>>(
             response.Headers.Count + DefaultResponseFieldsMinusHeaders);
 
-        if (options.LoggingFields.HasFlag(HttpLoggingFields.ResponseStatusCode))
+        if (loggingFields.HasFlag(HttpLoggingFields.ResponseStatusCode))
         {
             list.Add(new KeyValuePair<string, object?>(nameof(response.StatusCode), response.StatusCode));
         }
 
-        if (options.LoggingFields.HasFlag(HttpLoggingFields.ResponseHeaders))
+        if (loggingFields.HasFlag(HttpLoggingFields.ResponseHeaders))
         {
-            FilterHeaders(list, response.Headers, options._internalResponseHeaders);
+            FilterHeaders(list, response.Headers, allowedResponseHeaders);
         }
 
-        var httpResponseLog = new HttpResponseLog(list);
+        if (list.Count > 0)
+        {
+            var httpResponseLog = new HttpResponseLog(list);
 
-        logger.ResponseLog(httpResponseLog);
+            logger.ResponseLog(httpResponseLog);
+        }
     }
 
     internal static void FilterHeaders(List<KeyValuePair<string, object?>> keyValues,

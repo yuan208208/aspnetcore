@@ -1,12 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
@@ -29,10 +25,7 @@ public class FormFeature : IFormFeature
     /// <param name="form">The <see cref="IFormCollection"/> to use as the backing store.</param>
     public FormFeature(IFormCollection form)
     {
-        if (form == null)
-        {
-            throw new ArgumentNullException(nameof(form));
-        }
+        ArgumentNullException.ThrowIfNull(form);
 
         Form = form;
         _request = default!;
@@ -55,14 +48,8 @@ public class FormFeature : IFormFeature
     /// <param name="options">The <see cref="FormOptions"/>.</param>
     public FormFeature(HttpRequest request, FormOptions options)
     {
-        if (request == null)
-        {
-            throw new ArgumentNullException(nameof(request));
-        }
-        if (options == null)
-        {
-            throw new ArgumentNullException(nameof(options));
-        }
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(options);
 
         _request = request;
         _options = options;
@@ -72,7 +59,7 @@ public class FormFeature : IFormFeature
     {
         get
         {
-            MediaTypeHeaderValue.TryParse(_request.ContentType, out var mt);
+            _ = MediaTypeHeaderValue.TryParse(_request.ContentType, out var mt);
             return mt;
         }
     }
@@ -114,11 +101,10 @@ public class FormFeature : IFormFeature
 
         if (!HasFormContentType)
         {
-            throw new InvalidOperationException("Incorrect Content-Type: " + _request.ContentType);
+            throw new InvalidOperationException("This request does not have a Content-Type header. Forms are available from requests with bodies like POSTs and a form Content-Type of either application/x-www-form-urlencoded or multipart/form-data.");
         }
 
-        // TODO: Issue #456 Avoid Sync-over-Async http://blogs.msdn.com/b/pfxteam/archive/2012/04/13/10293638.aspx
-        // TODO: How do we prevent thread exhaustion?
+        // c.f., https://aka.ms/aspnet/forms-async
         return ReadFormAsync().GetAwaiter().GetResult();
     }
 
@@ -184,6 +170,7 @@ public class FormFeature : IFormFeature
             else if (HasMultipartFormContentType(contentType))
             {
                 var formAccumulator = new KeyValueAccumulator();
+                var sectionCount = 0;
 
                 var boundary = GetBoundary(contentType, _options.MultipartBoundaryLengthLimit);
                 var multipartReader = new MultipartReader(boundary, _request.Body)
@@ -195,6 +182,11 @@ public class FormFeature : IFormFeature
                 var section = await multipartReader.ReadNextSectionAsync(cancellationToken);
                 while (section != null)
                 {
+                    sectionCount++;
+                    if (sectionCount > _options.ValueCountLimit)
+                    {
+                        throw new InvalidDataException($"Form value count limit {_options.ValueCountLimit} exceeded.");
+                    }
                     // Parse the content disposition here and pass it further to avoid reparsings
                     if (!ContentDispositionHeaderValue.TryParse(section.ContentDisposition, out var contentDisposition))
                     {
@@ -233,10 +225,6 @@ public class FormFeature : IFormFeature
                         {
                             files = new FormFileCollection();
                         }
-                        if (files.Count >= _options.ValueCountLimit)
-                        {
-                            throw new InvalidDataException($"Form value count limit {_options.ValueCountLimit} exceeded.");
-                        }
                         files.Add(file);
                     }
                     else if (contentDisposition.IsFormDisposition())
@@ -249,17 +237,13 @@ public class FormFeature : IFormFeature
 
                         // Do not limit the key name length here because the multipart headers length limit is already in effect.
                         var key = formDataSection.Name;
-                        var value = await formDataSection.GetValueAsync();
+                        var value = await formDataSection.GetValueAsync(cancellationToken);
 
                         formAccumulator.Append(key, value);
-                        if (formAccumulator.ValueCount > _options.ValueCountLimit)
-                        {
-                            throw new InvalidDataException($"Form value count limit {_options.ValueCountLimit} exceeded.");
-                        }
                     }
                     else
                     {
-                        System.Diagnostics.Debug.Assert(false, "Unrecognized content-disposition for this section: " + section.ContentDisposition);
+                        // Ignore form sections with invalid content disposition
                     }
 
                     section = await multipartReader.ReadNextSectionAsync(cancellationToken);
@@ -297,7 +281,7 @@ public class FormFeature : IFormFeature
     private static Encoding FilterEncoding(Encoding? encoding)
     {
         // UTF-7 is insecure and should not be honored. UTF-8 will succeed for most cases.
-        // https://docs.microsoft.com/en-us/dotnet/core/compatibility/syslib-warnings/syslib0001
+        // https://learn.microsoft.com/en-us/dotnet/core/compatibility/syslib-warnings/syslib0001
         if (encoding == null || encoding.CodePage == 65000)
         {
             return Encoding.UTF8;

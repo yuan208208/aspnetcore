@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Routing.Constraints;
@@ -72,21 +70,24 @@ public class RouteOptions
     /// </summary>
     public IDictionary<string, Type> ConstraintMap
     {
-        [RequiresUnreferencedCode($"The linker cannot determine what constraints are being added via the ConstraintMap property. Prefer {nameof(RouteOptions)}.{nameof(SetParameterPolicy)} instead for setting constraints. This warning can be suppressed if this property is being used to read of delete constraints.")]
+        [RequiresUnreferencedCode($"The linker cannot determine what constraints are being added via the ConstraintMap property. Prefer {nameof(RouteOptions)}.{nameof(SetParameterPolicy)} instead for setting constraints. This warning can be suppressed if this property is being used to read or delete constraints.")]
         get
         {
             return _constraintTypeMap;
         }
         set
         {
-            if (value == null)
-            {
-                throw new ArgumentNullException(nameof(ConstraintMap));
-            }
+            ArgumentNullException.ThrowIfNull(value);
 
             _constraintTypeMap = value;
         }
     }
+
+    /// <summary>
+    /// <see cref="SetParameterPolicy{T}(string)"/> ensures that types are added to the constraint map in a trimmer safe way.
+    /// This API allows reading the map without encountering a trimmer warning within the framework.
+    /// </summary>
+    internal IDictionary<string, Type> TrimmerSafeConstraintMap => _constraintTypeMap;
 
     private static IDictionary<string, Type> GetDefaultConstraintMap()
     {
@@ -112,9 +113,10 @@ public class RouteOptions
         AddConstraint<MaxRouteConstraint>(defaults, "max");
         AddConstraint<RangeRouteConstraint>(defaults, "range");
 
-        // Regex-based constraints
+        // The alpha constraint uses a compiled regex which has a minimal size cost.
         AddConstraint<AlphaRouteConstraint>(defaults, "alpha");
-        AddConstraint<RegexInlineRouteConstraint>(defaults, "regex");
+
+        AddConstraint<RegexErrorStubRouteConstraint>(defaults, "regex"); // Used to generate error message at runtime with helpful message.
 
         AddConstraint<RequiredRouteConstraint>(defaults, "required");
 
@@ -125,14 +127,14 @@ public class RouteOptions
         return defaults;
     }
 
-   /// <summary>
-   /// Adds or overwrites the parameter policy with the associated route pattern token.
-   /// </summary>
+    /// <summary>
+    /// Adds or overwrites the parameter policy with the associated route pattern token.
+    /// </summary>
     /// <typeparam name="T">The parameter policy type.</typeparam>
     /// <param name="token">The route token used to apply the parameter policy.</param>
-    public void SetParameterPolicy<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]T>(string token) where T : IParameterPolicy
+    public void SetParameterPolicy<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>(string token) where T : IParameterPolicy
     {
-        ConstraintMap[token] = typeof(T);
+        _constraintTypeMap[token] = typeof(T);
     }
 
     /// <summary>
@@ -148,10 +150,10 @@ public class RouteOptions
             throw new InvalidOperationException($"{type} must implement {typeof(IParameterPolicy)}");
         }
 
-        ConstraintMap[token] = type;
+        _constraintTypeMap[token] = type;
     }
 
-    private static void AddConstraint<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]TConstraint>(Dictionary<string, Type> constraintMap, string text) where TConstraint : IRouteConstraint
+    private static void AddConstraint<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TConstraint>(Dictionary<string, Type> constraintMap, string text) where TConstraint : IRouteConstraint
     {
         constraintMap[text] = typeof(TConstraint);
     }

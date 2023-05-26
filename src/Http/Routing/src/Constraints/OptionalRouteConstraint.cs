@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using Microsoft.AspNetCore.Http;
 
 namespace Microsoft.AspNetCore.Routing.Constraints;
@@ -17,10 +16,7 @@ public class OptionalRouteConstraint : IRouteConstraint
     /// <param name="innerConstraint"></param>
     public OptionalRouteConstraint(IRouteConstraint innerConstraint)
     {
-        if (innerConstraint == null)
-        {
-            throw new ArgumentNullException(nameof(innerConstraint));
-        }
+        ArgumentNullException.ThrowIfNull(innerConstraint);
 
         InnerConstraint = innerConstraint;
     }
@@ -38,17 +34,10 @@ public class OptionalRouteConstraint : IRouteConstraint
         RouteValueDictionary values,
         RouteDirection routeDirection)
     {
-        if (routeKey == null)
-        {
-            throw new ArgumentNullException(nameof(routeKey));
-        }
+        ArgumentNullException.ThrowIfNull(routeKey);
+        ArgumentNullException.ThrowIfNull(values);
 
-        if (values == null)
-        {
-            throw new ArgumentNullException(nameof(values));
-        }
-
-        if (values.TryGetValue(routeKey, out var value))
+        if (values.TryGetValue(routeKey, out _))
         {
             return InnerConstraint.Match(httpContext,
                                          route,

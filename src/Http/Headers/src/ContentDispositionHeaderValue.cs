@@ -1,10 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Buffers;
 using System.Buffers.Text;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Contracts;
 using System.Globalization;
@@ -19,7 +17,7 @@ namespace Microsoft.Net.Http.Headers;
 /// Represents the value of a <c>Content-Disposition</c> header.
 /// </summary>
 /// <remarks>
-/// Note this is for use both in HTTP (https://tools.ietf.org/html/rfc6266) and MIME (https://tools.ietf.org/html/rfc2183)
+/// Note this is for use both in HTTP (<see href="https://tools.ietf.org/html/rfc6266"/>) and MIME (<see href="https://tools.ietf.org/html/rfc2183"/>).
 /// </remarks>
 public class ContentDispositionHeaderValue
 {
@@ -34,8 +32,13 @@ public class ContentDispositionHeaderValue
     private static readonly char[] QuestionMark = new char[] { '?' };
     private static readonly char[] SingleQuote = new char[] { '\'' };
     private static readonly char[] EscapeChars = new char[] { '\\', '"' };
-    private static ReadOnlySpan<byte> MimePrefix => new byte[] { (byte)'"', (byte)'=', (byte)'?', (byte)'u', (byte)'t', (byte)'f', (byte)'-', (byte)'8', (byte)'?', (byte)'B', (byte)'?' };
-    private static ReadOnlySpan<byte> MimeSuffix => new byte[] { (byte)'?', (byte)'=', (byte)'"' };
+    private static ReadOnlySpan<byte> MimePrefix => "\"=?utf-8?B?"u8;
+    private static ReadOnlySpan<byte> MimeSuffix => "?=\""u8;
+
+    // attr-char definition from RFC5987
+    // Same as token except ( "*" / "'" / "%" )
+    private static readonly SearchValues<char> AttrChar =
+        SearchValues.Create("!#$&+-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ^_`abcdefghijklmnopqrstuvwxyz|~");
 
     private static readonly HttpHeaderParser<ContentDispositionHeaderValue> Parser
         = new GenericHeaderParser<ContentDispositionHeaderValue>(false, GetDispositionTypeLength);
@@ -402,7 +405,7 @@ public class ContentDispositionHeaderValue
         {
             string? result;
             // filename*=utf-8'lang'%7FMyString
-            if (parameter.EndsWith("*", StringComparison.Ordinal))
+            if (parameter.EndsWith('*'))
             {
                 if (TryDecode5987(nameParameter.Value, out result))
                 {
@@ -437,7 +440,7 @@ public class ContentDispositionHeaderValue
         }
         else
         {
-            var processedValue = StringSegment.Empty;
+            StringSegment processedValue;
             if (parameter.EndsWith("*", StringComparison.Ordinal))
             {
                 processedValue = Encode5987(value);
@@ -496,7 +499,7 @@ public class ContentDispositionHeaderValue
     }
 
     // Replaces characters not suitable for HTTP headers with '_' rather than MIME encoding them.
-    private StringSegment Sanitize(StringSegment input)
+    private static StringSegment Sanitize(StringSegment input)
     {
         var result = input;
 
@@ -506,7 +509,7 @@ public class ContentDispositionHeaderValue
             for (int i = 0; i < result.Length; i++)
             {
                 var c = result[i];
-                if ((int)c > 0x7f || (int)c < 0x20)
+                if ((int)c >= 0x7f || (int)c < 0x20)
                 {
                     c = '_'; // Replace out-of-range characters
                 }
@@ -527,19 +530,12 @@ public class ContentDispositionHeaderValue
             && value.EndsWith("\"", StringComparison.Ordinal);
     }
 
-    // tspecials are required to be in a quoted string.  Only non-ascii needs to be encoded.
+    // tspecials are required to be in a quoted string.  Only non-ascii and control characters need to be encoded.
     private static bool RequiresEncoding(StringSegment input)
     {
         Contract.Assert(input != null);
 
-        for (int i = 0; i < input.Length; i++)
-        {
-            if ((int)input[i] > 0x7f || (int)input[i] < 0x20)
-            {
-                return true;
-            }
-        }
-        return false;
+        return input.AsSpan().IndexOfAnyExceptInRange((char)0x20, (char)0x7e) >= 0;
     }
 
     // Encode using MIME encoding
@@ -575,7 +571,7 @@ public class ContentDispositionHeaderValue
     }
 
     // Attempt to decode MIME encoded strings
-    private bool TryDecodeMime(StringSegment input, [NotNullWhen(true)] out string? output)
+    private static bool TryDecodeMime(StringSegment input, [NotNullWhen(true)] out string? output)
     {
         Contract.Assert(input != null);
 
@@ -640,7 +636,7 @@ public class ContentDispositionHeaderValue
                 // This is an ASCII char. Let's handle it ourselves.
 
                 char c = (char)inputBytes[totalBytesConsumed];
-                if (!HttpRuleParser.IsTokenChar(c) || c == '*' || c == '\'' || c == '%')
+                if (!AttrChar.Contains(c))
                 {
                     HexEscape(builder, c);
                 }

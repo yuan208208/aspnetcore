@@ -1,21 +1,15 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Buffers;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.IO.Pipelines;
 using System.Net;
-using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Claims;
 using System.Security.Principal;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Http;
@@ -149,19 +143,105 @@ internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPo
             KnownMethod = VerbId;
             StatusCode = 200;
 
-            var originalPath = GetOriginalPath();
+            var originalPath = GetOriginalPath() ?? string.Empty;
+            var pathBase = _server.VirtualPath ?? string.Empty;
+            if (pathBase.Length > 1 && pathBase[^1] == '/')
+            {
+                pathBase = pathBase[..^1];
+            }
 
             if (KnownMethod == HttpApiTypes.HTTP_VERB.HttpVerbOPTIONS && string.Equals(RawTarget, "*", StringComparison.Ordinal))
             {
                 PathBase = string.Empty;
                 Path = string.Empty;
             }
+            else if (string.IsNullOrEmpty(pathBase) || pathBase == "/")
+            {
+                PathBase = string.Empty;
+                Path = originalPath;
+            }
+            else if (originalPath.Equals(pathBase, StringComparison.Ordinal))
+            {
+                // Exact match, no need to preserve the casing
+                PathBase = pathBase;
+                Path = string.Empty;
+            }
+            else if (originalPath.Equals(pathBase, StringComparison.OrdinalIgnoreCase))
+            {
+                // Preserve the user input casing
+                PathBase = originalPath;
+                Path = string.Empty;
+            }
+            else if (originalPath.Length == pathBase.Length + 1
+                && originalPath[^1] == '/'
+                && originalPath.StartsWith(pathBase, StringComparison.Ordinal))
+            {
+                // Exact match, no need to preserve the casing
+                PathBase = pathBase;
+                Path = "/";
+            }
+            else if (originalPath.Length == pathBase.Length + 1
+                && originalPath[^1] == '/'
+                && originalPath.StartsWith(pathBase, StringComparison.OrdinalIgnoreCase))
+            {
+                // Preserve the user input casing
+                PathBase = originalPath[..pathBase.Length];
+                Path = "/";
+            }
             else
             {
-                // Path and pathbase are unescaped by RequestUriBuilder
-                // The UsePathBase middleware will modify the pathbase and path correctly
-                PathBase = string.Empty;
-                Path = originalPath ?? string.Empty;
+                // Http.Sys path base matching is based on the cooked url which applies some non-standard normalizations that we don't use
+                // like collapsing duplicate slashes "//", converting '\' to '/', and un-escaping "%2F" to '/'. Find the right split and
+                // ignore the normalizations.
+                var originalOffset = 0;
+                var baseOffset = 0;
+                while (originalOffset < originalPath.Length && baseOffset < pathBase.Length)
+                {
+                    var baseValue = pathBase[baseOffset];
+                    var offsetValue = originalPath[originalOffset];
+                    if (baseValue == offsetValue
+                        || char.ToUpperInvariant(baseValue) == char.ToUpperInvariant(offsetValue))
+                    {
+                        // case-insensitive match, continue
+                        originalOffset++;
+                        baseOffset++;
+                    }
+                    else if (baseValue == '/' && offsetValue == '\\')
+                    {
+                        // Http.Sys considers these equivalent
+                        originalOffset++;
+                        baseOffset++;
+                    }
+                    else if (baseValue == '/' && originalPath.AsSpan(originalOffset).StartsWith("%2F", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Http.Sys un-escapes this
+                        originalOffset += 3;
+                        baseOffset++;
+                    }
+                    else if (baseOffset > 0 && pathBase[baseOffset - 1] == '/'
+                        && (offsetValue == '/' || offsetValue == '\\'))
+                    {
+                        // Duplicate slash, skip
+                        originalOffset++;
+                    }
+                    else if (baseOffset > 0 && pathBase[baseOffset - 1] == '/'
+                        && originalPath.AsSpan(originalOffset).StartsWith("%2F", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Duplicate slash equivalent, skip
+                        originalOffset += 3;
+                    }
+                    else
+                    {
+                        // Mismatch, fall back
+                        // The failing test case here is "/base/call//../bat//path1//path2", reduced to "/base/call/bat//path1//path2",
+                        // where http.sys collapses "//" before "../", but we do "../" first. We've lost the context that there were dot segments,
+                        // or duplicate slashes, how do we figure out that "call/" can be eliminated?
+                        originalOffset = 0;
+                        break;
+                    }
+                }
+                PathBase = originalPath[..originalOffset];
+                Path = originalPath[originalOffset..];
             }
 
             var cookedUrl = GetCookedUrl();
@@ -265,8 +345,26 @@ internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPo
         // Note Http.Sys adds the Transfer-Encoding: chunked header to HTTP/2 requests with bodies for back compat.
         // Transfer-Encoding takes priority over Content-Length.
         string transferEncoding = RequestHeaders.TransferEncoding.ToString();
-        if (string.Equals("chunked", transferEncoding?.Trim(), StringComparison.OrdinalIgnoreCase))
+        if (IsChunked(transferEncoding))
         {
+            // https://datatracker.ietf.org/doc/html/rfc7230#section-3.3.2
+            // A sender MUST NOT send a Content-Length header field in any message
+            // that contains a Transfer-Encoding header field.
+            // https://datatracker.ietf.org/doc/html/rfc7230#section-3.3.3
+            // If a message is received with both a Transfer-Encoding and a
+            // Content-Length header field, the Transfer-Encoding overrides the
+            // Content-Length.  Such a message might indicate an attempt to
+            // perform request smuggling (Section 9.5) or response splitting
+            // (Section 9.4) and ought to be handled as an error.  A sender MUST
+            // remove the received Content-Length field prior to forwarding such
+            // a message downstream.
+            // We should remove the Content-Length request header in this case, for compatibility
+            // reasons, include X-Content-Length so that the original Content-Length is still available.
+            if (RequestHeaders.ContentLength.HasValue)
+            {
+                RequestHeaders.Add("X-Content-Length", RequestHeaders[HeaderNames.ContentLength]);
+                RequestHeaders.ContentLength = null;
+            }
             return true;
         }
 
@@ -401,6 +499,17 @@ internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPo
         await _bodyOutput.FlushAsync(default);
     }
 
+    // Response trailers, reset, and GOAWAY are only on HTTP/2+ and require IIS support
+    // that is only available on Win 11/Server 2022 or later.
+    private static readonly bool OsSupportsAdvancedHttp2 = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348, 0);
+
+    protected bool AdvancedHttp2FeaturesSupported()
+    {
+        return OsSupportsAdvancedHttp2 &&
+            HttpVersion >= System.Net.HttpVersion.Version20 &&
+            NativeMethods.HttpHasResponse4(_requestNativeHandle);
+    }
+
     public unsafe void SetResponseHeaders()
     {
         // Verifies we have sent the statuscode before writing a header
@@ -409,7 +518,7 @@ internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPo
         // This copies data into the underlying buffer
         NativeMethods.HttpSetResponseStatusCode(_requestNativeHandle, (ushort)StatusCode, reasonPhrase);
 
-        if (HttpVersion >= System.Net.HttpVersion.Version20 && NativeMethods.HttpHasResponse4(_requestNativeHandle))
+        if (AdvancedHttp2FeaturesSupported())
         {
             // Check if connection close is set, if so setting goaway
             if (string.Equals(ConnectionClose, HttpResponseHeaders[HeaderNames.Connection], StringComparison.OrdinalIgnoreCase))
@@ -610,6 +719,11 @@ internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPo
         Log.ApplicationError(_logger, ((IHttpConnectionFeature)this).ConnectionId, ((IHttpRequestIdentifierFeature)this).TraceIdentifier, ex);
     }
 
+    protected void ReportRequestAborted()
+    {
+        Log.RequestAborted(_logger, ((IHttpConnectionFeature)this).ConnectionId, ((IHttpRequestIdentifierFeature)this).TraceIdentifier);
+    }
+
     public void PostCompletion(NativeMethods.REQUEST_NOTIFICATION_STATUS requestNotificationStatus)
     {
         NativeMethods.HttpSetCompletionStatus(_requestNativeHandle, requestNotificationStatus);
@@ -657,7 +771,7 @@ internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPo
         Dispose(disposing: true);
     }
 
-    private void ThrowResponseAlreadyStartedException(string name)
+    private static void ThrowResponseAlreadyStartedException(string name)
     {
         throw new InvalidOperationException(CoreStrings.FormatParameterReadOnlyAfterResponseStarted(name));
     }
@@ -698,6 +812,7 @@ internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPo
         finally
         {
             // Post completion after completing the request to resume the state machine
+            // This must be called before freeing the GCHandle _thisHandle, see comment in IndicateManagedRequestComplete for details
             PostCompletion(ConvertRequestCompletionResults(successfulRequest));
 
             // After disposing a safe handle, Dispose() will not block waiting for the pinvokes to finish.
@@ -720,5 +835,20 @@ internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPo
     {
         return success ? NativeMethods.REQUEST_NOTIFICATION_STATUS.RQ_NOTIFICATION_CONTINUE
                        : NativeMethods.REQUEST_NOTIFICATION_STATUS.RQ_NOTIFICATION_FINISH_REQUEST;
+    }
+
+    private static bool IsChunked(string? transferEncoding)
+    {
+        if (transferEncoding is null)
+        {
+            return false;
+        }
+
+        var index = transferEncoding.LastIndexOf(',');
+        if (transferEncoding.AsSpan().Slice(index + 1).Trim().Equals("chunked", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return false;
     }
 }

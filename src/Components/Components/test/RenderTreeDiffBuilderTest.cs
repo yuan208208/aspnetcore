@@ -1,15 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Components.Rendering;
 using Microsoft.AspNetCore.Components.RenderTree;
 using Microsoft.AspNetCore.Components.Test.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Components.Test;
 
@@ -215,7 +210,7 @@ public class RenderTreeDiffBuilderTest : IDisposable
         // Arrange
         oldTree.OpenComponent<CaptureSetParametersComponent>(0);
         oldTree.SetKey("retained key");
-        oldTree.AddAttribute(1, "ParamName", "Param old value");
+        oldTree.AddComponentParameter(1, "ParamName", "Param old value");
         oldTree.CloseComponent();
         using var initial = new RenderTreeBuilder();
         GetRenderedBatch(initial, oldTree, false); // Assign initial IDs
@@ -223,12 +218,12 @@ public class RenderTreeDiffBuilderTest : IDisposable
 
         newTree.OpenComponent<CaptureSetParametersComponent>(0);
         newTree.SetKey("new key");
-        newTree.AddAttribute(1, "ParamName", "New component param value");
+        newTree.AddComponentParameter(1, "ParamName", "New component param value");
         newTree.CloseComponent();
 
         newTree.OpenComponent<CaptureSetParametersComponent>(0);
         newTree.SetKey("retained key");
-        newTree.AddAttribute(1, "ParamName", "Param new value");
+        newTree.AddComponentParameter(1, "ParamName", "Param new value");
         newTree.CloseComponent();
 
         // Without the key, it would modify the param on the first component,
@@ -256,12 +251,12 @@ public class RenderTreeDiffBuilderTest : IDisposable
         // Arrange
         oldTree.OpenComponent<FakeComponent>(0);
         oldTree.SetKey("will delete");
-        oldTree.AddAttribute(1, nameof(FakeComponent.StringProperty), "Anything");
+        oldTree.AddComponentParameter(1, nameof(FakeComponent.StringProperty), "Anything");
         oldTree.CloseComponent();
 
         oldTree.OpenComponent<FakeComponent>(0);
         oldTree.SetKey("will retain");
-        oldTree.AddAttribute(1, nameof(FakeComponent.StringProperty), "Retained param value");
+        oldTree.AddComponentParameter(1, nameof(FakeComponent.StringProperty), "Retained param value");
         oldTree.CloseComponent();
 
         // Instantiate initial components
@@ -271,7 +266,7 @@ public class RenderTreeDiffBuilderTest : IDisposable
 
         newTree.OpenComponent<FakeComponent>(0);
         newTree.SetKey("will retain");
-        newTree.AddAttribute(1, nameof(FakeComponent.StringProperty), "Retained param value");
+        newTree.AddComponentParameter(1, nameof(FakeComponent.StringProperty), "Retained param value");
         newTree.CloseComponent();
 
         // Without the key, it updates the param on the first component, then
@@ -286,6 +281,67 @@ public class RenderTreeDiffBuilderTest : IDisposable
         Assert.Same(oldComponents[1], newComponent);
         Assert.Collection(result.Edits,
             entry => AssertEdit(entry, RenderTreeEditType.RemoveFrame, 0));
+    }
+
+    [Fact]
+    public void RecognizesKeyedComponentDeletionsBeforeUnchangedNonKeyedComponent()
+    {
+        // Arrange
+        oldTree.OpenComponent<FakeComponent>(0);
+        oldTree.SetKey("will delete");
+        oldTree.AddComponentParameter(1, nameof(FakeComponent.StringProperty), "Will delete");
+        oldTree.CloseComponent();
+
+        oldTree.OpenComponent<FakeComponent>(2);
+        oldTree.AddComponentParameter(3, nameof(FakeComponent.StringProperty), "Retained param value");
+        oldTree.CloseComponent();
+
+        // Instantiate initial components
+        using var initial = new RenderTreeBuilder();
+        GetRenderedBatch(initial, oldTree, false);
+        var oldComponents = GetComponents(oldTree);
+
+        newTree.OpenComponent<FakeComponent>(2);
+        newTree.AddComponentParameter(3, nameof(FakeComponent.StringProperty), "Retained param value");
+        newTree.CloseComponent();
+
+        // Act
+        var (result, referenceFrames) = GetSingleUpdatedComponent();
+        var newComponent = GetComponents(newTree).Single();
+
+        // Assert
+        Assert.Same(oldComponents[1], newComponent);
+        Assert.Collection(result.Edits,
+            entry => AssertEdit(entry, RenderTreeEditType.RemoveFrame, 0));
+    }
+
+    [Fact]
+    public void RecognizesKeyedComponentInsertionsBeforeUnchangedNonKeyedComponent()
+    {
+        // Arrange
+        oldTree.OpenComponent<FakeComponent>(1);
+        oldTree.CloseComponent();
+
+        // Instantiate initial components
+        using var initial = new RenderTreeBuilder();
+        GetRenderedBatch(initial, oldTree, false);
+        var oldComponents = GetComponents(oldTree);
+
+        newTree.OpenComponent<FakeComponent>(0);
+        newTree.SetKey("will insert");
+        newTree.CloseComponent();
+
+        newTree.OpenComponent<FakeComponent>(1);
+        newTree.CloseComponent();
+
+        // Act
+        var (result, referenceFrames) = GetSingleUpdatedComponent();
+        var newComponents = GetComponents(newTree);
+
+        // Assert
+        Assert.Same(oldComponents[0], newComponents[1]);
+        Assert.Collection(result.Edits,
+            entry => AssertEdit(entry, RenderTreeEditType.PrependFrame, 0));
     }
 
     [Fact]
@@ -490,9 +546,9 @@ public class RenderTreeDiffBuilderTest : IDisposable
         // Assert
         Assert.Collection(result.Edits,
             // Insert new
-            edit => AssertEdit(edit, RenderTreeEditType.PrependFrame, 0),
+            edit => AssertEdit(edit, RenderTreeEditType.RemoveFrame, 0),
             // Delete old
-            edit => AssertEdit(edit, RenderTreeEditType.RemoveFrame, 1));
+            edit => AssertEdit(edit, RenderTreeEditType.PrependFrame, 0));
     }
 
     [Fact]
@@ -760,7 +816,7 @@ public class RenderTreeDiffBuilderTest : IDisposable
         using var batchBuilder = new RenderBatchBuilder();
 
         // Act
-        var diff = RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, oldTree.GetFrames(), newTree.GetFrames());
+        var diff = RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, oldTree.GetFrames(), newTree.GetFrames(), newTree.GetNamedEvents());
 
         // Assert: We're going to dispose the old component and render the new one
         Assert.Equal(new[] { 0 }, batchBuilder.ComponentDisposalQueue);
@@ -1531,9 +1587,9 @@ public class RenderTreeDiffBuilderTest : IDisposable
         // Arrange
         var testObject = new object();
         newTree.OpenComponent<FakeComponent>(0);
-        newTree.AddAttribute(1, nameof(FakeComponent.IntProperty), 123);
-        newTree.AddAttribute(2, nameof(FakeComponent.StringProperty), "some string");
-        newTree.AddAttribute(3, nameof(FakeComponent.ObjectProperty), testObject);
+        newTree.AddComponentParameter(1, nameof(FakeComponent.IntProperty), 123);
+        newTree.AddComponentParameter(2, nameof(FakeComponent.StringProperty), "some string");
+        newTree.AddComponentParameter(3, nameof(FakeComponent.ObjectProperty), testObject);
         newTree.CloseComponent();
 
         // Act
@@ -1571,7 +1627,7 @@ public class RenderTreeDiffBuilderTest : IDisposable
 
         using var batchBuilder = new RenderBatchBuilder();
         using var renderTreeBuilder = new RenderTreeBuilder();
-        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTreeBuilder.GetFrames(), oldTree.GetFrames());
+        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTreeBuilder.GetFrames(), oldTree.GetFrames(), oldTree.GetNamedEvents());
         var originalFakeComponentInstance = oldTree.GetFrames().Array[2].Component;
         var originalFakeComponent2Instance = oldTree.GetFrames().Array[3].Component;
 
@@ -1647,17 +1703,17 @@ public class RenderTreeDiffBuilderTest : IDisposable
         // Arrange
         var objectWillNotChange = new object();
         oldTree.OpenComponent<FakeComponent>(12);
-        oldTree.AddAttribute(13, nameof(FakeComponent.StringProperty), "String will change");
-        oldTree.AddAttribute(14, nameof(FakeComponent.ObjectProperty), objectWillNotChange);
+        oldTree.AddComponentParameter(13, nameof(FakeComponent.StringProperty), "String will change");
+        oldTree.AddComponentParameter(14, nameof(FakeComponent.ObjectProperty), objectWillNotChange);
         oldTree.CloseComponent();
         newTree.OpenComponent<FakeComponent>(12);
-        newTree.AddAttribute(13, nameof(FakeComponent.StringProperty), "String did change");
-        newTree.AddAttribute(14, nameof(FakeComponent.ObjectProperty), objectWillNotChange);
+        newTree.AddComponentParameter(13, nameof(FakeComponent.StringProperty), "String did change");
+        newTree.AddComponentParameter(14, nameof(FakeComponent.ObjectProperty), objectWillNotChange);
         newTree.CloseComponent();
 
         using var batchBuilder = new RenderBatchBuilder();
         using var renderTree = new RenderTreeBuilder();
-        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTree.GetFrames(), oldTree.GetFrames());
+        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTree.GetFrames(), oldTree.GetFrames(), oldTree.GetNamedEvents());
         var originalComponentInstance = (FakeComponent)oldTree.GetFrames().Array[0].Component;
 
         // Act
@@ -1683,22 +1739,31 @@ public class RenderTreeDiffBuilderTest : IDisposable
         foreach (var tree in new[] { oldTree, newTree })
         {
             tree.OpenComponent<CaptureSetParametersComponent>(0);
-            tree.AddAttribute(1, "MyString", "Some fixed string");
-            tree.AddAttribute(1, "MyByte", (byte)123);
-            tree.AddAttribute(1, "MyInt", int.MaxValue);
-            tree.AddAttribute(1, "MyLong", long.MaxValue);
-            tree.AddAttribute(1, "MyBool", true);
-            tree.AddAttribute(1, "MyFloat", float.MaxValue);
-            tree.AddAttribute(1, "MyDouble", double.MaxValue);
-            tree.AddAttribute(1, "MyDecimal", decimal.MinusOne);
-            tree.AddAttribute(1, "MyDate", dateTimeWillNotChange);
-            tree.AddAttribute(1, "MyGuid", Guid.Empty);
+            tree.AddComponentParameter(1, "MyString", "Some fixed string");
+            tree.AddComponentParameter(1, "MyByte", (byte)123);
+            tree.AddComponentParameter(1, "MyInt", int.MaxValue);
+            tree.AddComponentParameter(1, "MyLong", long.MaxValue);
+            tree.AddComponentParameter(1, "MyBool", true);
+            tree.AddComponentParameter(1, "MyFloat", float.MaxValue);
+            tree.AddComponentParameter(1, "MyDouble", double.MaxValue);
+            tree.AddComponentParameter(1, "MyDecimal", decimal.MinusOne);
+            tree.AddComponentParameter(1, "MyDate", dateTimeWillNotChange);
+            tree.AddComponentParameter(1, "MyGuid", Guid.Empty);
+            tree.AddComponentParameter(1, "MySByte", (sbyte)123);
+            tree.AddComponentParameter(1, "MyShort", (short)123);
+            tree.AddComponentParameter(1, "MyUShort", (ushort)123);
+            tree.AddComponentParameter(1, "MyUInt", uint.MaxValue);
+            tree.AddComponentParameter(1, "MyULong", ulong.MaxValue);
+            tree.AddComponentParameter(1, "MyChar", 'c');
+            tree.AddComponentParameter(1, "MyEnum", StringComparison.OrdinalIgnoreCase);
+            tree.AddComponentParameter(1, "MyEventCallBack", EventCallback.Empty);
+            tree.AddComponentParameter(1, "MyEventCallBackOfT", EventCallback<int>.Empty);
             tree.CloseComponent();
         }
 
         using var batchBuilder = new RenderBatchBuilder();
         using var renderTreeBuilder = new RenderTreeBuilder();
-        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTreeBuilder.GetFrames(), oldTree.GetFrames());
+        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTreeBuilder.GetFrames(), oldTree.GetFrames(), oldTree.GetNamedEvents());
         var originalComponentInstance = (CaptureSetParametersComponent)oldTree.GetFrames().Array[0].Component;
         Assert.Equal(1, originalComponentInstance.SetParametersCallCount);
 
@@ -1722,13 +1787,13 @@ public class RenderTreeDiffBuilderTest : IDisposable
         foreach (var tree in new[] { oldTree, newTree })
         {
             tree.OpenComponent<CaptureSetParametersComponent>(0);
-            tree.AddAttribute(1, "MyFragment", fragmentWillNotChange);
+            tree.AddComponentParameter(1, "MyFragment", fragmentWillNotChange);
             tree.CloseComponent();
         }
 
         using var batchBuilder = new RenderBatchBuilder();
         using var renderTreeBuilder = new RenderTreeBuilder();
-        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTreeBuilder.GetFrames(), oldTree.GetFrames());
+        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTreeBuilder.GetFrames(), oldTree.GetFrames(), oldTree.GetNamedEvents());
         var componentInstance = (CaptureSetParametersComponent)oldTree.GetFrames().Array[0].Component;
         Assert.Equal(1, componentInstance.SetParametersCallCount);
 
@@ -1754,13 +1819,13 @@ public class RenderTreeDiffBuilderTest : IDisposable
 
         using var batchBuilder = new RenderBatchBuilder();
         using var renderTree = new RenderTreeBuilder();
-        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTree.GetFrames(), oldTree.GetFrames());
+        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, renderTree.GetFrames(), oldTree.GetFrames(), oldTree.GetNamedEvents());
 
         // Act/Assert
         // Note that we track NonDisposableComponent was disposed even though it's not IDisposable,
         // because it's up to the upstream renderer to decide what "disposing" a component means
         Assert.Empty(batchBuilder.ComponentDisposalQueue);
-        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, oldTree.GetFrames(), newTree.GetFrames());
+        RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, oldTree.GetFrames(), newTree.GetFrames(), newTree.GetNamedEvents());
         Assert.Equal(new[] { 0, 1 }, batchBuilder.ComponentDisposalQueue);
     }
 
@@ -1953,14 +2018,14 @@ public class RenderTreeDiffBuilderTest : IDisposable
         // Arrange
         oldTree.OpenComponent<CaptureSetParametersComponent>(0);
         oldTree.SetKey("first key");
-        oldTree.AddAttribute(1, nameof(FakeComponent.StringProperty), "First param");
+        oldTree.AddComponentParameter(1, nameof(FakeComponent.StringProperty), "First param");
         oldTree.CloseComponent();
 
         oldTree.AddContent(2, "Unkeyed item");
 
         oldTree.OpenComponent<CaptureSetParametersComponent>(0);
         oldTree.SetKey("second key");
-        oldTree.AddAttribute(1, nameof(FakeComponent.StringProperty), "Second param");
+        oldTree.AddComponentParameter(1, nameof(FakeComponent.StringProperty), "Second param");
         oldTree.CloseComponent();
 
         using var renderTreeBuilder = new RenderTreeBuilder();
@@ -1969,14 +2034,14 @@ public class RenderTreeDiffBuilderTest : IDisposable
 
         newTree.OpenComponent<CaptureSetParametersComponent>(0);
         newTree.SetKey("second key");
-        newTree.AddAttribute(1, nameof(FakeComponent.StringProperty), "Second param");
+        newTree.AddComponentParameter(1, nameof(FakeComponent.StringProperty), "Second param");
         newTree.CloseComponent();
 
         newTree.AddContent(2, "Unkeyed item");
 
         newTree.OpenComponent<CaptureSetParametersComponent>(0);
         newTree.SetKey("first key");
-        newTree.AddAttribute(1, nameof(FakeComponent.StringProperty), "First param modified");
+        newTree.AddComponentParameter(1, nameof(FakeComponent.StringProperty), "First param modified");
         newTree.CloseComponent();
 
         // Without the key, it changes the parameter on both
@@ -2173,14 +2238,14 @@ public class RenderTreeDiffBuilderTest : IDisposable
             var emptyFrames = renderTreeBuilder.GetFrames();
             var oldFrames = from.GetFrames();
 
-            RenderTreeDiffBuilder.ComputeDiff(renderer, initializeBatchBuilder, 0, emptyFrames, oldFrames);
+            RenderTreeDiffBuilder.ComputeDiff(renderer, initializeBatchBuilder, 0, emptyFrames, oldFrames, from.GetNamedEvents());
         }
 
         batchBuilder?.Dispose();
         // This gets disposed as part of the test type's Dispose
         batchBuilder = new RenderBatchBuilder();
 
-        var diff = RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, from.GetFrames(), to.GetFrames());
+        var diff = RenderTreeDiffBuilder.ComputeDiff(renderer, batchBuilder, 0, from.GetFrames(), to.GetFrames(), to.GetNamedEvents());
         batchBuilder.UpdatedComponentDiffs.Append(diff);
         return batchBuilder.ToBatch();
     }

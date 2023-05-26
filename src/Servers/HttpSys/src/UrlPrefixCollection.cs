@@ -1,9 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -69,10 +67,7 @@ public class UrlPrefixCollection : ICollection<UrlPrefix>
         lock (_prefixes)
         {
             var id = _nextId++;
-            if (_urlGroup != null)
-            {
-                _urlGroup.RegisterPrefix(item.FullPrefix, id);
-            }
+            _urlGroup?.RegisterPrefix(item.FullPrefix, id);
             _prefixes.Add(id, item);
         }
     }
@@ -159,10 +154,7 @@ public class UrlPrefixCollection : ICollection<UrlPrefix>
                 if (pair.Value.Equals(item))
                 {
                     id = pair.Key;
-                    if (_urlGroup != null)
-                    {
-                        _urlGroup.UnregisterPrefix(pair.Value.FullPrefix);
-                    }
+                    _urlGroup?.UnregisterPrefix(pair.Value.FullPrefix);
                 }
             }
             if (id.HasValue)

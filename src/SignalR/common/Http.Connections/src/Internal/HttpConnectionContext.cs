@@ -1,26 +1,25 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Security.Claims;
 using System.Security.Principal;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
+using Microsoft.AspNetCore.Connections.Abstractions;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http.Connections.Features;
 using Microsoft.AspNetCore.Http.Connections.Internal.Transports;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Microsoft.AspNetCore.Http.Connections.Internal;
 
-internal class HttpConnectionContext : ConnectionContext,
+internal sealed partial class HttpConnectionContext : ConnectionContext,
                                      IConnectionIdFeature,
                                      IConnectionItemsFeature,
                                      IConnectionTransportFeature,
@@ -31,7 +30,8 @@ internal class HttpConnectionContext : ConnectionContext,
                                      IHttpTransportFeature,
                                      IConnectionInherentKeepAliveFeature,
                                      IConnectionLifetimeFeature,
-                                     IConnectionLifetimeNotificationFeature
+                                     IConnectionLifetimeNotificationFeature,
+                                     IReconnectFeature
 {
     private readonly HttpConnectionDispatcherOptions _options;
 
@@ -49,6 +49,7 @@ internal class HttpConnectionContext : ConnectionContext,
     private CancellationTokenSource? _sendCts;
     private bool _activeSend;
     private long _startedSendTime;
+    private readonly bool _useAcks;
     private readonly object _sendingLock = new object();
     internal CancellationToken SendingToken { get; private set; }
 
@@ -60,7 +61,8 @@ internal class HttpConnectionContext : ConnectionContext,
     /// Creates the DefaultConnectionContext without Pipes to avoid upfront allocations.
     /// The caller is expected to set the <see cref="Transport"/> and <see cref="Application"/> pipes manually.
     /// </summary>
-    public HttpConnectionContext(string connectionId, string connectionToken, ILogger logger, IDuplexPipe transport, IDuplexPipe application, HttpConnectionDispatcherOptions options)
+    public HttpConnectionContext(string connectionId, string connectionToken, ILogger logger, MetricsContext metricsContext,
+        IDuplexPipe transport, IDuplexPipe application, HttpConnectionDispatcherOptions options, bool useAcks)
     {
         Transport = transport;
         _applicationStream = new PipeWriterStream(application.Output);
@@ -75,7 +77,8 @@ internal class HttpConnectionContext : ConnectionContext,
         SupportedFormats = TransferFormat.Binary | TransferFormat.Text;
         ActiveFormat = TransferFormat.Text;
 
-        _logger = logger;
+        _logger = logger ?? NullLogger.Instance;
+        MetricsContext = metricsContext;
 
         // PERF: This type could just implement IFeatureCollection
         Features = new FeatureCollection();
@@ -91,13 +94,21 @@ internal class HttpConnectionContext : ConnectionContext,
         Features.Set<IConnectionLifetimeFeature>(this);
         Features.Set<IConnectionLifetimeNotificationFeature>(this);
 
+        if (useAcks)
+        {
+            Features.Set<IReconnectFeature>(this);
+        }
+
         _connectionClosedTokenSource = new CancellationTokenSource();
         ConnectionClosed = _connectionClosedTokenSource.Token;
 
         _connectionCloseRequested = new CancellationTokenSource();
         ConnectionClosedRequested = _connectionCloseRequested.Token;
         AuthenticationExpiration = DateTimeOffset.MaxValue;
+        _useAcks = useAcks;
     }
+
+    public bool UseAcks => _useAcks;
 
     public CancellationTokenSource? Cancellation { get; set; }
 
@@ -115,7 +126,7 @@ internal class HttpConnectionContext : ConnectionContext,
 
     internal bool IsAuthenticationExpirationEnabled => _options.CloseOnAuthenticationExpiration;
 
-    public Task? TransportTask { get; set; }
+    public Task<bool>? TransportTask { get; set; }
 
     public Task PreviousPollTask { get; set; } = Task.CompletedTask;
 
@@ -137,6 +148,8 @@ internal class HttpConnectionContext : ConnectionContext,
     public HttpConnectionStatus Status { get; set; } = HttpConnectionStatus.Inactive;
 
     public override string ConnectionId { get; set; }
+
+    public MetricsContext MetricsContext { get; }
 
     internal string ConnectionToken { get; set; }
 
@@ -188,6 +201,8 @@ internal class HttpConnectionContext : ConnectionContext,
     public override CancellationToken ConnectionClosed { get; set; }
 
     public CancellationToken ConnectionClosedRequested { get; set; }
+
+    public Action NotifyOnReconnect { get; set; } = () => { };
 
     public override void Abort()
     {
@@ -384,6 +399,7 @@ internal class HttpConnectionContext : ConnectionContext,
     internal bool TryActivatePersistentConnection(
         ConnectionDelegate connectionDelegate,
         IHttpTransport transport,
+        Task currentRequestTask,
         HttpContext context,
         ILogger dispatcherLogger)
     {
@@ -393,11 +409,15 @@ internal class HttpConnectionContext : ConnectionContext,
             {
                 Status = HttpConnectionStatus.Active;
 
+                PreviousPollTask = currentRequestTask;
+
                 // Call into the end point passing the connection
-                ApplicationTask = ExecuteApplication(connectionDelegate);
+                ApplicationTask ??= ExecuteApplication(connectionDelegate);
 
                 // Start the transport
                 TransportTask = transport.ProcessRequestAsync(context, context.RequestAborted);
+
+                context.Features.Get<IHttpRequestTimeoutFeature>()?.DisableTimeout();
 
                 return true;
             }
@@ -440,7 +460,12 @@ internal class HttpConnectionContext : ConnectionContext,
 
                     // On the first poll, we flush the response immediately to mark the poll as "initialized" so future
                     // requests can be made safely
-                    TransportTask = nonClonedContext.Response.Body.FlushAsync();
+                    TransportTask = Func();
+                    async Task<bool> Func()
+                    {
+                        await nonClonedContext.Response.Body.FlushAsync();
+                        return false;
+                    };
                 }
                 else
                 {
@@ -519,6 +544,14 @@ internal class HttpConnectionContext : ConnectionContext,
         {
             // Cancel the previous request
             cts?.Cancel();
+
+            // TODO: remove transport check once other transports support acks
+            if (UseAcks && TransportType == HttpTransportType.WebSockets)
+            {
+                // Break transport send loop in case it's still waiting on reading from the application
+                Application.Input.CancelPendingRead();
+                UpdateConnectionPair();
+            }
 
             try
             {
@@ -620,118 +653,50 @@ internal class HttpConnectionContext : ConnectionContext,
         ThreadPool.UnsafeQueueUserWorkItem(static cts => ((CancellationTokenSource)cts!).Cancel(), _connectionCloseRequested);
     }
 
-    private static class Log
+    private void UpdateConnectionPair()
     {
-        private static readonly Action<ILogger, string, Exception?> _disposingConnection =
-            LoggerMessage.Define<string>(LogLevel.Trace, new EventId(1, "DisposingConnection"), "Disposing connection {TransportConnectionId}.");
+        var prevPipe = Application.Input;
+        var input = new Pipe(_options.TransportPipeOptions);
 
-        private static readonly Action<ILogger, Exception?> _waitingForApplication =
-            LoggerMessage.Define(LogLevel.Trace, new EventId(2, "WaitingForApplication"), "Waiting for application to complete.");
+        // Add new pipe for reading from and writing to transport from app code
+        var transportToApplication = new DuplexPipe(Transport.Input, input.Writer);
+        var applicationToTransport = new DuplexPipe(input.Reader, Application.Output);
 
-        private static readonly Action<ILogger, Exception?> _applicationComplete =
-            LoggerMessage.Define(LogLevel.Trace, new EventId(3, "ApplicationComplete"), "Application complete.");
+        Application = applicationToTransport;
+        Transport = transportToApplication;
 
-        private static readonly Action<ILogger, HttpTransportType, Exception?> _waitingForTransport =
-            LoggerMessage.Define<HttpTransportType>(LogLevel.Trace, new EventId(4, "WaitingForTransport"), "Waiting for {TransportType} transport to complete.");
+        // Close previous pipe with specific error that application code can catch to know a restart is occurring
+        prevPipe.Complete(new ConnectionResetException(""));
+        Features.GetRequiredFeature<IReconnectFeature>().NotifyOnReconnect.Invoke();
+    }
 
-        private static readonly Action<ILogger, HttpTransportType, Exception?> _transportComplete =
-            LoggerMessage.Define<HttpTransportType>(LogLevel.Trace, new EventId(5, "TransportComplete"), "{TransportType} transport complete.");
+    private static partial class Log
+    {
+        [LoggerMessage(1, LogLevel.Trace, "Disposing connection {TransportConnectionId}.", EventName = "DisposingConnection")]
+        public static partial void DisposingConnection(ILogger logger, string transportConnectionId);
 
-        private static readonly Action<ILogger, HttpTransportType, Exception?> _shuttingDownTransportAndApplication =
-            LoggerMessage.Define<HttpTransportType>(LogLevel.Trace, new EventId(6, "ShuttingDownTransportAndApplication"), "Shutting down both the application and the {TransportType} transport.");
+        [LoggerMessage(2, LogLevel.Trace, "Waiting for application to complete.", EventName = "WaitingForApplication")]
+        public static partial void WaitingForApplication(ILogger logger);
 
-        private static readonly Action<ILogger, HttpTransportType, Exception?> _waitingForTransportAndApplication =
-            LoggerMessage.Define<HttpTransportType>(LogLevel.Trace, new EventId(7, "WaitingForTransportAndApplication"), "Waiting for both the application and {TransportType} transport to complete.");
+        [LoggerMessage(3, LogLevel.Trace, "Application complete.", EventName = "ApplicationComplete")]
+        public static partial void ApplicationComplete(ILogger logger);
 
-        private static readonly Action<ILogger, HttpTransportType, Exception?> _transportAndApplicationComplete =
-            LoggerMessage.Define<HttpTransportType>(LogLevel.Trace, new EventId(8, "TransportAndApplicationComplete"), "The application and {TransportType} transport are both complete.");
+        [LoggerMessage(4, LogLevel.Trace, "Waiting for {TransportType} transport to complete.", EventName = "WaitingForTransport")]
+        public static partial void WaitingForTransport(ILogger logger, HttpTransportType transportType);
 
-        private static readonly Action<ILogger, int, string, Exception?> _transportSendtimeout =
-            LoggerMessage.Define<int, string>(LogLevel.Trace, new EventId(9, "TransportSendTimeout"), "{Timeout}ms elapsed attempting to send a message to the transport. Closing connection {TransportConnectionId}.");
+        [LoggerMessage(5, LogLevel.Trace, "{TransportType} transport complete.", EventName = "TransportComplete")]
+        public static partial void TransportComplete(ILogger logger, HttpTransportType transportType);
 
-        public static void DisposingConnection(ILogger logger, string connectionId)
-        {
-            if (logger == null)
-            {
-                return;
-            }
+        [LoggerMessage(6, LogLevel.Trace, "Shutting down both the application and the {TransportType} transport.", EventName = "ShuttingDownTransportAndApplication")]
+        public static partial void ShuttingDownTransportAndApplication(ILogger logger, HttpTransportType transportType);
 
-            _disposingConnection(logger, connectionId, null);
-        }
+        [LoggerMessage(7, LogLevel.Trace, "Waiting for both the application and {TransportType} transport to complete.", EventName = "WaitingForTransportAndApplication")]
+        public static partial void WaitingForTransportAndApplication(ILogger logger, HttpTransportType transportType);
 
-        public static void WaitingForApplication(ILogger logger)
-        {
-            if (logger == null)
-            {
-                return;
-            }
+        [LoggerMessage(8, LogLevel.Trace, "The application and {TransportType} transport are both complete.", EventName = "TransportAndApplicationComplete")]
+        public static partial void TransportAndApplicationComplete(ILogger logger, HttpTransportType transportType);
 
-            _waitingForApplication(logger, null);
-        }
-
-        public static void ApplicationComplete(ILogger logger)
-        {
-            if (logger == null)
-            {
-                return;
-            }
-
-            _applicationComplete(logger, null);
-        }
-
-        public static void WaitingForTransport(ILogger logger, HttpTransportType transportType)
-        {
-            if (logger == null)
-            {
-                return;
-            }
-
-            _waitingForTransport(logger, transportType, null);
-        }
-
-        public static void TransportComplete(ILogger logger, HttpTransportType transportType)
-        {
-            if (logger == null)
-            {
-                return;
-            }
-
-            _transportComplete(logger, transportType, null);
-        }
-
-        public static void ShuttingDownTransportAndApplication(ILogger logger, HttpTransportType transportType)
-        {
-            if (logger == null)
-            {
-                return;
-            }
-
-            _shuttingDownTransportAndApplication(logger, transportType, null);
-        }
-
-        public static void WaitingForTransportAndApplication(ILogger logger, HttpTransportType transportType)
-        {
-            if (logger == null)
-            {
-                return;
-            }
-
-            _waitingForTransportAndApplication(logger, transportType, null);
-        }
-
-        public static void TransportAndApplicationComplete(ILogger logger, HttpTransportType transportType)
-        {
-            if (logger == null)
-            {
-                return;
-            }
-
-            _transportAndApplicationComplete(logger, transportType, null);
-        }
-
-        public static void TransportSendTimeout(ILogger logger, TimeSpan transportTimeout, string connectionId)
-        {
-            _transportSendtimeout(logger, (int)transportTimeout.TotalMilliseconds, connectionId, null);
-        }
+        [LoggerMessage(9, LogLevel.Trace, "{Timeout}ms elapsed attempting to send a message to the transport. Closing connection {TransportConnectionId}.", EventName = "TransportSendTimeout")]
+        public static partial void TransportSendTimeout(ILogger logger, TimeSpan timeout, string transportConnectionId);
     }
 }

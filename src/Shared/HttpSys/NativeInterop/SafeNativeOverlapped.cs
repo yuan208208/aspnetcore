@@ -8,12 +8,12 @@ using System.Threading;
 
 namespace Microsoft.AspNetCore.HttpSys.Internal;
 
-internal class SafeNativeOverlapped : SafeHandle
+internal sealed class SafeNativeOverlapped : SafeHandle
 {
     internal static readonly SafeNativeOverlapped Zero = new SafeNativeOverlapped();
     private readonly ThreadPoolBoundHandle? _boundHandle;
 
-    internal SafeNativeOverlapped()
+    public SafeNativeOverlapped()
         : base(IntPtr.Zero, true)
     {
     }

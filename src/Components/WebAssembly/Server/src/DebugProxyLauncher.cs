@@ -1,15 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.CommandLineUtils;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,28 +18,27 @@ internal static class DebugProxyLauncher
     private static Task<string>? LaunchedDebugProxyUrl;
     private static readonly Regex NowListeningRegex = new Regex(@"^\s*Now listening on: (?<url>.*)$", RegexOptions.None, TimeSpan.FromSeconds(10));
     private static readonly Regex ApplicationStartedRegex = new Regex(@"^\s*Application started\. Press Ctrl\+C to shut down\.$", RegexOptions.None, TimeSpan.FromSeconds(10));
+    private static readonly Regex NowListeningFirefoxRegex = new Regex(@"^\s*Debug proxy for firefox now listening on tcp://(?<url>.*)\. And expecting firefox at port 6000\.$", RegexOptions.None, TimeSpan.FromSeconds(10));
     private static readonly string[] MessageSuppressionPrefixes = new[]
     {
-            "Hosting environment:",
-            "Content root path:",
-            "Now listening on:",
-            "Application started. Press Ctrl+C to shut down.",
-        };
+        "Hosting environment:",
+        "Content root path:",
+        "Now listening on:",
+        "Application started. Press Ctrl+C to shut down.",
+        "Debug proxy for firefox now",
+    };
 
-    public static Task<string> EnsureLaunchedAndGetUrl(IServiceProvider serviceProvider, string devToolsHost)
+    public static Task<string> EnsureLaunchedAndGetUrl(IServiceProvider serviceProvider, string devToolsHost, bool isFirefox)
     {
         lock (LaunchLock)
         {
-            if (LaunchedDebugProxyUrl == null)
-            {
-                LaunchedDebugProxyUrl = LaunchAndGetUrl(serviceProvider, devToolsHost);
-            }
+            LaunchedDebugProxyUrl ??= LaunchAndGetUrl(serviceProvider, devToolsHost, isFirefox);
 
             return LaunchedDebugProxyUrl;
         }
     }
 
-    private static async Task<string> LaunchAndGetUrl(IServiceProvider serviceProvider, string devToolsHost)
+    private static async Task<string> LaunchAndGetUrl(IServiceProvider serviceProvider, string devToolsHost, bool isFirefox)
     {
         var tcs = new TaskCompletionSource<string>();
 
@@ -56,9 +50,10 @@ internal static class DebugProxyLauncher
         var processStartInfo = new ProcessStartInfo
         {
             FileName = muxerPath,
-            Arguments = $"exec \"{executablePath}\" --OwnerPid {ownerPid} --DevToolsUrl {devToolsHost}",
+            Arguments = $"exec \"{executablePath}\" --OwnerPid {ownerPid} --DevToolsUrl {devToolsHost} --IsFirefoxDebugging {isFirefox} --FirefoxProxyPort 6001",
             UseShellExecute = false,
             RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
         RemoveUnwantedEnvironmentVariables(processStartInfo.Environment);
 
@@ -70,7 +65,7 @@ internal static class DebugProxyLauncher
         else
         {
             PassThroughConsoleOutput(debugProxyProcess);
-            CompleteTaskWhenServerIsReady(debugProxyProcess, tcs);
+            CompleteTaskWhenServerIsReady(debugProxyProcess, isFirefox, tcs);
 
             new CancellationTokenSource(DebugProxyLaunchTimeout).Token.Register(() =>
             {
@@ -98,6 +93,10 @@ internal static class DebugProxyLauncher
 
     private static string LocateDebugProxyExecutable(IWebHostEnvironment environment)
     {
+        if (string.IsNullOrEmpty(environment.ApplicationName))
+        {
+            throw new InvalidOperationException("IWebHostEnvironment.ApplicationName is required to be set in order to start the debug proxy.");
+        }
         var assembly = Assembly.Load(environment.ApplicationName);
         var debugProxyPath = Path.Combine(
             Path.GetDirectoryName(assembly.Location)!,
@@ -117,14 +116,14 @@ internal static class DebugProxyLauncher
     {
         process.OutputDataReceived += (sender, eventArgs) =>
         {
-                // It's confusing if the debug proxy emits its own startup status messages, because the developer
-                // may think the ports/environment/paths refer to their actual application. So we want to suppress
-                // them, but we can't stop the debug proxy app from emitting the messages entirely (e.g., via
-                // SuppressStatusMessages) because we need the "Now listening on" one to detect the chosen port.
-                // Instead, we'll filter out known strings from the passthrough logic. It's legit to hardcode these
-                // strings because they are also hardcoded like this inside WebHostExtensions.cs and can't vary
-                // according to culture.
-                if (eventArgs.Data is not null)
+            // It's confusing if the debug proxy emits its own startup status messages, because the developer
+            // may think the ports/environment/paths refer to their actual application. So we want to suppress
+            // them, but we can't stop the debug proxy app from emitting the messages entirely (e.g., via
+            // SuppressStatusMessages) because we need the "Now listening on" one to detect the chosen port.
+            // Instead, we'll filter out known strings from the passthrough logic. It's legit to hardcode these
+            // strings because they are also hardcoded like this inside WebHostExtensions.cs and can't vary
+            // according to culture.
+            if (eventArgs.Data is not null)
             {
                 foreach (var prefix in MessageSuppressionPrefixes)
                 {
@@ -139,24 +138,43 @@ internal static class DebugProxyLauncher
         };
     }
 
-    private static void CompleteTaskWhenServerIsReady(Process aspNetProcess, TaskCompletionSource<string> taskCompletionSource)
+    private static void CompleteTaskWhenServerIsReady(Process aspNetProcess, bool isFirefox, TaskCompletionSource<string> taskCompletionSource)
     {
         string? capturedUrl = null;
+        var errorEncountered = false;
+
+        aspNetProcess.ErrorDataReceived += OnErrorDataReceived;
+        aspNetProcess.BeginErrorReadLine();
+
         aspNetProcess.OutputDataReceived += OnOutputDataReceived;
         aspNetProcess.BeginOutputReadLine();
+
+        void OnErrorDataReceived(object sender, DataReceivedEventArgs eventArgs)
+        {
+            if (!string.IsNullOrEmpty(eventArgs.Data))
+            {
+                taskCompletionSource.TrySetException(new InvalidOperationException(
+                    eventArgs.Data));
+                errorEncountered = true;
+            }
+        }
 
         void OnOutputDataReceived(object sender, DataReceivedEventArgs eventArgs)
         {
             if (string.IsNullOrEmpty(eventArgs.Data))
             {
-                taskCompletionSource.TrySetException(new InvalidOperationException(
-                    "No output has been recevied from the application."));
+                if (!errorEncountered)
+                {
+                    taskCompletionSource.TrySetException(new InvalidOperationException(
+                        "Expected output has not been received from the application."));
+                }
                 return;
             }
 
-            if (ApplicationStartedRegex.IsMatch(eventArgs.Data))
+            if (ApplicationStartedRegex.IsMatch(eventArgs.Data) && !isFirefox)
             {
                 aspNetProcess.OutputDataReceived -= OnOutputDataReceived;
+                aspNetProcess.ErrorDataReceived -= OnErrorDataReceived;
                 if (!string.IsNullOrEmpty(capturedUrl))
                 {
                     taskCompletionSource.TrySetResult(capturedUrl);
@@ -169,10 +187,21 @@ internal static class DebugProxyLauncher
             }
             else
             {
+                var matchFirefox = NowListeningFirefoxRegex.Match(eventArgs.Data);
+                if (matchFirefox.Success && isFirefox)
+                {
+                    aspNetProcess.OutputDataReceived -= OnOutputDataReceived;
+                    aspNetProcess.ErrorDataReceived -= OnErrorDataReceived;
+                    capturedUrl = matchFirefox.Groups["url"].Value;
+                    taskCompletionSource.TrySetResult(capturedUrl);
+                    return;
+                }
                 var match = NowListeningRegex.Match(eventArgs.Data);
                 if (match.Success)
                 {
                     capturedUrl = match.Groups["url"].Value;
+                    capturedUrl = capturedUrl.Replace("http://", "ws://");
+                    capturedUrl = capturedUrl.Replace("https://", "wss://");
                 }
             }
         }

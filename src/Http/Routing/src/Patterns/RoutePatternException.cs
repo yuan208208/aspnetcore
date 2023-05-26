@@ -1,7 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Serialization;
 
 namespace Microsoft.AspNetCore.Routing.Patterns;
@@ -12,6 +12,7 @@ namespace Microsoft.AspNetCore.Routing.Patterns;
 [Serializable]
 public sealed class RoutePatternException : Exception
 {
+    [Obsolete]
     private RoutePatternException(SerializationInfo info, StreamingContext context)
         : base(info, context)
     {
@@ -23,18 +24,11 @@ public sealed class RoutePatternException : Exception
     /// </summary>
     /// <param name="pattern">The route pattern as raw text.</param>
     /// <param name="message">The exception message.</param>
-    public RoutePatternException(string pattern, string message)
+    public RoutePatternException([StringSyntax("Route")] string pattern, string message)
         : base(message)
     {
-        if (pattern == null)
-        {
-            throw new ArgumentNullException(nameof(pattern));
-        }
-
-        if (message == null)
-        {
-            throw new ArgumentNullException(nameof(message));
-        }
+        ArgumentNullException.ThrowIfNull(pattern);
+        ArgumentNullException.ThrowIfNull(message);
 
         Pattern = pattern;
     }
@@ -49,6 +43,7 @@ public sealed class RoutePatternException : Exception
     /// </summary>
     /// <param name="info">The <see cref="SerializationInfo"/> to populate with data.</param>
     /// <param name="context">The destination (<see cref="StreamingContext" />) for this serialization.</param>
+    [Obsolete("This API supports obsolete formatter-based serialization. It should not be called or extended by application code.", DiagnosticId = "SYSLIB0051", UrlFormat = "https://aka.ms/dotnet-warnings/{0}")]
     public override void GetObjectData(SerializationInfo info, StreamingContext context)
     {
         info.AddValue(nameof(Pattern), Pattern);

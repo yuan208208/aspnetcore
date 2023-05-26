@@ -1,15 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Linq;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing.Constraints;
 using Microsoft.AspNetCore.Routing.TestObjects;
 using Microsoft.AspNetCore.Testing;
 using Microsoft.Extensions.Options;
 using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Routing;
 
@@ -142,7 +139,7 @@ public class RouteConstraintBuilderTest
         Assert.Equal("name", result.First().Key);
         Assert.IsType<OptionalRouteConstraint>(Assert.Single(result).Value);
         var optionalConstraint = (OptionalRouteConstraint)result.First().Value;
-        var compositeConstraint = Assert.IsType<CompositeRouteConstraint>(optionalConstraint.InnerConstraint); ;
+        var compositeConstraint = Assert.IsType<CompositeRouteConstraint>(optionalConstraint.InnerConstraint);
         Assert.Equal(2, compositeConstraint.Constraints.Count());
 
         Assert.Single(compositeConstraint.Constraints, c => c is MinLengthRouteConstraint);

@@ -1,15 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics.Tracing;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Globalization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Internal;
-using Microsoft.AspNetCore.Testing;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Hosting;
 
@@ -23,7 +18,7 @@ public class HostingEventSourceTests
 
         // Assert
         Assert.Equal("Microsoft.AspNetCore.Hosting", eventSource.Name);
-        Assert.Equal(Guid.Parse("9ded64a4-414c-5251-dcf7-1e4e20c15e70"), eventSource.Guid);
+        Assert.Equal(Guid.Parse("9ded64a4-414c-5251-dcf7-1e4e20c15e70", CultureInfo.InvariantCulture), eventSource.Guid);
     }
 
     [Fact]
@@ -85,8 +80,8 @@ public class HostingEventSourceTests
                 context,
                 new string[]
                 {
-                        "GET",
-                        "/Home/Index"
+                    "GET",
+                    "/Home/Index"
                 });
 
             context = new DefaultHttpContext();
@@ -96,8 +91,8 @@ public class HostingEventSourceTests
                 context,
                 new string[]
                 {
-                        "POST",
-                        "/"
+                    "POST",
+                    "/"
                 });
 
             return variations;
@@ -182,12 +177,13 @@ public class HostingEventSourceTests
     public async Task VerifyCountersFireWithCorrectValues()
     {
         // Arrange
-        var eventListener = new TestCounterListener(new[] {
-                "requests-per-second",
-                "total-requests",
-                "current-requests",
-                "failed-requests"
-            });
+        var eventListener = new TestCounterListener(new[]
+        {
+            "requests-per-second",
+            "total-requests",
+            "current-requests",
+            "failed-requests"
+        });
 
         var hostingEventSource = GetHostingEventSource();
 

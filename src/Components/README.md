@@ -8,11 +8,10 @@ This folder contains the component model shared between the WebAssembly and Serv
 
 The following contains a description of each sub-directory in the `Components` directory.
 
-- `Analyzers`: Contains a collection of Rosyln analyzers for Blazor components
+- `Analyzers`: Contains a collection of Rosyln analyzers for Razor components
 - `Authorization`: Contains source files associated with auth-related components and services in Blazor
-- `Components`: Contains the implementation for the Blazor component model
+- `Components`: Contains the implementation for Blazor's component model
 - `Forms`: Contains source files for Form components in Blazor
-- `Ignitor`: A library for testing Blazor Server apps
 - `Samples`: Contains a collection of sample apps in Blazor
 - `Server`: Contains the implementation for Blazor Server-specific components
 - `Shared`: Contains a collection of shared constants and helper methods/classes
@@ -26,6 +25,7 @@ The following contains a description of each sub-directory in the `Components` d
   - `Server`: Contains the implementation for WASM-specific extension methods and the launch logic for the debugging proxy
   - `WebAssembly`: Contains WebAssembly-specific implementations of the renderer, HostBuilder, etc.
   - `WebAssembly.Authentication`: Contains the WASM-specific implementations
+- `WebView`: Contains the source files to support [Blazor Hybrid](https://github.com/dotnet/maui/tree/main/src/BlazorWebView) within [`dotnet/maui`](https://github.com/dotnet/maui). Changes in this project can be tested with `dotnet/maui` following [this guide](https://github.com/dotnet/maui/wiki/Blazor-Desktop#aspnet-core).
 
 ## Development Setup
 
@@ -34,6 +34,38 @@ The following contains a description of each sub-directory in the `Components` d
 To build this specific project from source, follow the instructions [on building the project](../../docs/BuildFromSource.md#step-3-build-the-repo).
 
 **Note:** You also need to run the preceding `build` command in the command line before building in VS to ensure that the Web.JS dependency is built.
+
+### A Guide to build Web.JS
+
+Prior to building `src\Components\Web.JS\`
+
+1. You'll need to install [Node](https://nodejs.org) and [yarn](https://yarnpkg.com) on your machine.
+
+2. You'll need to run the `restore` script locally to install the required dotnet dependencies and setup the repo. The `restore` script is located in the root of the repo.
+
+```bash
+./restore.sh
+```
+
+```powershell
+./restore.ps1
+```
+
+3. After the restore script has finished executing, activate the locally installed .NET by running the following command.
+
+```bash
+source activate.sh
+```
+
+```powershell
+. ./activate.ps1
+```
+
+4. Now you can build `src\Components\Web.JS\` by running the following commands in the `src\Components\Web.JS` directory:
+
+```powershell
+dotnet build
+```
 
 ### Test
 

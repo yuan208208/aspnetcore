@@ -1,16 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Threading.Tasks;
 using BasicTestApp;
 using BasicTestApp.ErrorBoundaryTest;
 using Microsoft.AspNetCore.Components.E2ETest.Infrastructure;
 using Microsoft.AspNetCore.Components.E2ETest.Infrastructure.ServerFixtures;
 using Microsoft.AspNetCore.E2ETesting;
-using Microsoft.AspNetCore.Testing;
 using OpenQA.Selenium;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace Microsoft.AspNetCore.Components.E2ETest.Tests;
@@ -39,6 +35,8 @@ public class ErrorBoundaryTest : ServerTestBase<ToggleExecutionModeServerFixture
     [InlineData("afterrender-sync")]
     [InlineData("afterrender-async")]
     [InlineData("while-rendering")]
+    [InlineData("dispatch-sync-exception")]
+    [InlineData("dispatch-async-exception")]
     public void CanHandleExceptions(string triggerId)
     {
         var container = Browser.Exists(By.Id("error-boundary-container"));

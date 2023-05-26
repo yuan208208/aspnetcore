@@ -1,25 +1,19 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
+using System.Diagnostics.Metrics;
 using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.AspNetCore.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.Metrics;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Testing;
-using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Diagnostics;
 
@@ -134,8 +128,8 @@ public class ExceptionHandlerTest
                 .UseTestServer()
                 .Configure(app =>
                 {
-                        // add response buffering
-                        app.Use(async (httpContext, next) =>
+                    // add response buffering
+                    app.Use(async (httpContext, next) =>
                     {
                         var response = httpContext.Response;
                         var originalResponseBody = response.Body;
@@ -170,8 +164,8 @@ public class ExceptionHandlerTest
 
                     app.Run(async (context) =>
                     {
-                            // Write some content into the response before throwing exception
-                            await context.Response.WriteAsync(new string('a', 100));
+                        // Write some content into the response before throwing exception
+                        await context.Response.WriteAsync(new string('a', 100));
 
                         throw new InvalidOperationException("Invalid input provided.");
                     });
@@ -532,7 +526,8 @@ public class ExceptionHandlerTest
         // Assert
         Assert.Equal("An error occurred when configuring the exception handler middleware. " +
             "Either the 'ExceptionHandlingPath' or the 'ExceptionHandler' property must be set in 'UseExceptionHandler()'. " +
-            "Alternatively, set one of the aforementioned properties in 'Startup.ConfigureServices' as follows: 'services.AddExceptionHandler(options => { ... });'.",
+            "Alternatively, set one of the aforementioned properties in 'Startup.ConfigureServices' as follows: 'services.AddExceptionHandler(options => { ... });' " +
+            "or configure to generate a 'ProblemDetails' response in 'service.AddProblemDetails()'.",
             exception.Message);
     }
 
@@ -557,18 +552,18 @@ public class ExceptionHandlerTest
                         {
                             exception = ex;
 
-                                // This mimics what the server would do when an exception occurs
-                                httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                            // This mimics what the server would do when an exception occurs
+                            httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
                         }
 
-                            // Invalid operation exception
-                            Assert.NotNull(exception);
+                        // Invalid operation exception
+                        Assert.NotNull(exception);
                         Assert.Equal("The exception handler configured on ExceptionHandlerOptions produced a 404 status response. " +
             "This InvalidOperationException containing the original exception was thrown since this is often due to a misconfigured ExceptionHandlingPath. " +
             "If the exception handler is expected to return 404 status responses then set AllowStatusCode404Response to true.", exception.Message);
 
-                            // The original exception is inner exception
-                            Assert.NotNull(exception.InnerException);
+                        // The original exception is inner exception
+                        Assert.NotNull(exception.InnerException);
                         Assert.IsType<ApplicationException>(exception.InnerException);
                         Assert.Equal("Something bad happened.", exception.InnerException.Message);
 
@@ -914,5 +909,66 @@ public class ExceptionHandlerTest
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
             Assert.Equal("Custom handler", await response.Content.ReadAsStringAsync());
         }
+    }
+
+    [Fact]
+    public async Task UnhandledError_ExceptionNameTagAdded()
+    {
+        // Arrange
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var meterFactory = new TestMeterFactory();
+        using var instrumentRecorder = new InstrumentRecorder<double>(meterFactory, "Microsoft.AspNetCore.Hosting", "request-duration");
+        using var measurementReporter = new MeasurementReporter<double>(meterFactory, "Microsoft.AspNetCore.Hosting", "request-duration");
+        measurementReporter.Register(m =>
+        {
+            tcs.SetResult();
+        });
+
+        using var host = new HostBuilder()
+            .ConfigureServices(s =>
+            {
+                s.AddSingleton<IMeterFactory>(meterFactory);
+            })
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
+                .Configure(app =>
+                {
+                    app.UseExceptionHandler(new ExceptionHandlerOptions()
+                    {
+                        ExceptionHandler = httpContext =>
+                        {
+                            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+                            return httpContext.Response.WriteAsync("Custom handler");
+                        }
+                    });
+                    app.Run(context =>
+                    {
+                        throw new Exception("Test exception");
+                    });
+                });
+            }).Build();
+
+        await host.StartAsync();
+
+        var server = host.GetTestServer();
+
+        // Act
+        var response = await server.CreateClient().GetAsync("/path");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        await tcs.Task.DefaultTimeout();
+
+        // Assert
+        Assert.Collection(
+            instrumentRecorder.GetMeasurements(),
+            m =>
+            {
+                Assert.True(m.Value > 0);
+                Assert.Equal(404, (int)m.Tags.ToArray().Single(t => t.Key == "status-code").Value);
+                Assert.Equal("System.Exception", (string)m.Tags.ToArray().Single(t => t.Key == "exception-name").Value);
+            });
     }
 }

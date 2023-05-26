@@ -2,15 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Microsoft.AspNetCore.Components.RenderTree;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Internal;
 using Microsoft.Extensions.Logging;
+using static Microsoft.AspNetCore.Internal.LinkerFlags;
 
 namespace Microsoft.AspNetCore.Components.Server.Circuits;
 
+#pragma warning disable CA1852 // Seal internal types
 internal partial class RemoteRenderer : WebRenderer
+#pragma warning restore CA1852 // Seal internal types
 {
     private static readonly Task CanceledTask = Task.FromCanceled(new CancellationToken(canceled: true));
 
@@ -173,7 +178,7 @@ internal partial class RemoteRenderer : WebRenderer
         // All the batches are sent in order based on the fact that SignalR
         // provides ordering for the underlying messages and that the batches
         // are always in order.
-        return Task.WhenAll(_unacknowledgedRenderBatches.Select(b => WriteBatchBytesAsync(b)));
+        return Task.WhenAll(_unacknowledgedRenderBatches.Select(WriteBatchBytesAsync));
     }
 
     private async Task WriteBatchBytesAsync(UnacknowledgedRenderBatch pending)
@@ -273,15 +278,22 @@ internal partial class RemoteRenderer : WebRenderer
             // We return the task in here, but the caller doesn't await it.
             return Dispatcher.InvokeAsync(() =>
             {
-                    // Now we're on the sync context, check again whether we got disposed since this
-                    // work item was queued. If so there's nothing to do.
-                    if (!_disposing)
+                // Now we're on the sync context, check again whether we got disposed since this
+                // work item was queued. If so there's nothing to do.
+                if (!_disposing)
                 {
                     ProcessPendingRender();
                 }
             });
         }
     }
+
+    protected override IComponent ResolveComponentForRenderMode([DynamicallyAccessedMembers(Component)] Type componentType, int? parentComponentId, IComponentActivator componentActivator, IComponentRenderMode componentTypeRenderMode)
+        => componentTypeRenderMode switch
+        {
+            ServerRenderMode or AutoRenderMode => componentActivator.CreateInstance(componentType),
+            _ => throw new NotSupportedException($"Cannot create a component of type '{componentType}' because its render mode '{componentTypeRenderMode}' is not supported by interactive server-side rendering."),
+        };
 
     private void ProcessPendingBatch(string? errorMessageOrNull, UnacknowledgedRenderBatch entry)
     {

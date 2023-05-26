@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 
@@ -20,10 +19,7 @@ public readonly struct FieldIdentifier : IEquatable<FieldIdentifier>
     /// <typeparam name="TField">The field <see cref="Type"/>.</typeparam>
     public static FieldIdentifier Create<TField>(Expression<Func<TField>> accessor)
     {
-        if (accessor == null)
-        {
-            throw new ArgumentNullException(nameof(accessor));
-        }
+        ArgumentNullException.ThrowIfNull(accessor);
 
         ParseAccessor(accessor, out var model, out var fieldName);
         return new FieldIdentifier(model, fieldName);
@@ -36,10 +32,7 @@ public readonly struct FieldIdentifier : IEquatable<FieldIdentifier>
     /// <param name="fieldName">The name of the editable field.</param>
     public FieldIdentifier(object model, string fieldName)
     {
-        if (model is null)
-        {
-            throw new ArgumentNullException(nameof(model));
-        }
+        ArgumentNullException.ThrowIfNull(model);
 
         if (model.GetType().IsValueType)
         {
@@ -110,7 +103,7 @@ public readonly struct FieldIdentifier : IEquatable<FieldIdentifier>
         fieldName = memberExpression.Member.Name;
 
         // Get a reference to the model object
-        // i.e., given an value like "(something).MemberName", determine the runtime value of "(something)",
+        // i.e., given a value like "(something).MemberName", determine the runtime value of "(something)",
         if (memberExpression.Expression is ConstantExpression constantExpression)
         {
             if (constantExpression.Value is null)

@@ -1,17 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using System.Linq;
-using System.Threading.Tasks;
+using System.Reflection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Abstractions;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Extensions.Primitives;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Mvc.IntegrationTests;
 
@@ -430,6 +426,40 @@ public class DictionaryModelBinderIntegrationTest
         Assert.True(modelState.IsValid);
     }
 
+    [Fact]
+    public async Task DictionaryModelBinder_BindsDictionaryOfSimpleType_NoData_WithDefaultValue()
+    {
+        // Arrange
+        var parameterBinder = ModelBindingTestHelper.GetParameterBinder();
+        var parameterInfo = typeof(DictionaryModelBinderIntegrationTest)
+            .GetMethod(nameof(SampleMethod_SimpleType), BindingFlags.Instance | BindingFlags.NonPublic)
+            .GetParameters()[0];
+        var parameter = new Controllers.ControllerParameterDescriptor()
+        {
+            Name = "parameter",
+            ParameterType = typeof(Dictionary<string, int>),
+            ParameterInfo = parameterInfo
+        };
+
+        var testContext = ModelBindingTestHelper.GetTestContext(request =>
+        {
+            request.QueryString = new QueryString("?");
+        });
+
+        var modelState = testContext.ModelState;
+
+        // Act
+        var modelBindingResult = await parameterBinder.BindModelAsync(parameter, testContext);
+
+        // Assert
+        Assert.False(modelBindingResult.IsModelSet);
+        Assert.Null(modelBindingResult.Model);
+
+        Assert.Empty(modelState);
+        Assert.Equal(0, modelState.ErrorCount);
+        Assert.True(modelState.IsValid);
+    }
+
     private class Person
     {
         [Range(minimum: 0, maximum: 15, ErrorMessage = "You're out of range.")]
@@ -818,6 +848,40 @@ public class DictionaryModelBinderIntegrationTest
         Assert.True(modelState.IsValid);
     }
 
+    [Fact]
+    public async Task DictionaryModelBinder_BindsDictionaryOfComplexType_NoData_WithDefaultValue()
+    {
+        // Arrange
+        var parameterBinder = ModelBindingTestHelper.GetParameterBinder();
+        var parameterInfo = typeof(DictionaryModelBinderIntegrationTest)
+            .GetMethod(nameof(SampleMethod_ComplexType), BindingFlags.Instance | BindingFlags.NonPublic)
+            .GetParameters()[0];
+        var parameter = new Controllers.ControllerParameterDescriptor()
+        {
+            Name = "parameter",
+            ParameterType = typeof(Dictionary<string, Person>),
+            ParameterInfo = parameterInfo
+        };
+
+        var testContext = ModelBindingTestHelper.GetTestContext(request =>
+        {
+            request.QueryString = new QueryString("?");
+        });
+
+        var modelState = testContext.ModelState;
+
+        // Act
+        var modelBindingResult = await parameterBinder.BindModelAsync(parameter, testContext);
+
+        // Assert
+        Assert.False(modelBindingResult.IsModelSet);
+        Assert.Null(modelBindingResult.Model);
+
+        Assert.Empty(modelState);
+        Assert.Equal(0, modelState.ErrorCount);
+        Assert.True(modelState.IsValid);
+    }
+
     public static TheoryData<string> CollectionType_ImpliedPrefixData
     {
         get
@@ -1148,8 +1212,8 @@ public class DictionaryModelBinderIntegrationTest
 
         var testContext = ModelBindingTestHelper.GetTestContext(request =>
         {
-                // CollectionModelBinder binds an empty collection when value providers are all empty.
-                request.QueryString = new QueryString("?a=b");
+            // CollectionModelBinder binds an empty collection when value providers are all empty.
+            request.QueryString = new QueryString("?a=b");
         });
 
         var modelState = testContext.ModelState;
@@ -1585,4 +1649,7 @@ public class DictionaryModelBinderIntegrationTest
             return _data.TryGetValue(key, out value);
         }
     }
+
+    private void SampleMethod_ComplexType(Dictionary<string, Person> parameter = null) { }
+    private void SampleMethod_SimpleType(Dictionary<string, int> parameter = null) { }
 }

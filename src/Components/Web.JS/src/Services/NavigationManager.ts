@@ -1,35 +1,68 @@
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
 import '@microsoft/dotnet-js-interop';
 import { resetScrollAfterNextBatch } from '../Rendering/Renderer';
 import { EventDelegator } from '../Rendering/Events/EventDelegator';
 
 let hasEnabledNavigationInterception = false;
 let hasRegisteredNavigationEventListeners = false;
+let hasLocationChangingEventListeners = false;
+let currentHistoryIndex = 0;
+let currentLocationChangingCallId = 0;
 
 // Will be initialized once someone registers
-let notifyLocationChangedCallback: ((uri: string, intercepted: boolean) => Promise<void>) | null = null;
+let notifyLocationChangedCallback: ((uri: string, state: string | undefined, intercepted: boolean) => Promise<void>) | null = null;
+let notifyLocationChangingCallback: ((callId: number, uri: string, state: string | undefined, intercepted: boolean) => Promise<void>) | null = null;
+
+let popStateCallback: ((state: PopStateEvent) => Promise<void> | void) = onBrowserInitiatedPopState;
+let resolveCurrentNavigation: ((shouldContinueNavigation: boolean) => void) | null = null;
 
 // These are the functions we're making available for invocation from .NET
 export const internalFunctions = {
   listenForNavigationEvents,
   enableNavigationInterception,
-  navigateTo,
-  getBaseURI: () => document.baseURI,
-  getLocationHref: () => location.href,
+  setHasLocationChangingListeners,
+  endLocationChanging,
+  navigateTo: navigateToFromDotNet,
+  getBaseURI: (): string => document.baseURI,
+  getLocationHref: (): string => location.href,
+  scrollToElement,
 };
 
-function listenForNavigationEvents(callback: (uri: string, intercepted: boolean) => Promise<void>): void {
-  notifyLocationChangedCallback = callback;
+function listenForNavigationEvents(
+  locationChangedCallback: (uri: string, state: string | undefined, intercepted: boolean) => Promise<void>,
+  locationChangingCallback: (callId: number, uri: string, state: string | undefined, intercepted: boolean) => Promise<void>
+): void {
+  notifyLocationChangedCallback = locationChangedCallback;
+  notifyLocationChangingCallback = locationChangingCallback;
 
   if (hasRegisteredNavigationEventListeners) {
     return;
   }
 
   hasRegisteredNavigationEventListeners = true;
-  window.addEventListener('popstate', () => notifyLocationChanged(false));
+  window.addEventListener('popstate', onPopState);
+  currentHistoryIndex = history.state?._index ?? 0;
 }
 
 function enableNavigationInterception(): void {
   hasEnabledNavigationInterception = true;
+}
+
+function setHasLocationChangingListeners(hasListeners: boolean) {
+  hasLocationChangingEventListeners = hasListeners;
+}
+
+export function scrollToElement(identifier: string): boolean {
+  const element = document.getElementById(identifier);
+
+  if (element) {
+    element.scrollIntoView();
+    return true;
+  }
+
+  return false;
 }
 
 export function attachToEventDelegator(eventDelegator: EventDelegator): void {
@@ -55,8 +88,9 @@ export function attachToEventDelegator(eventDelegator: EventDelegator): void {
     const anchorTarget = findAnchorTarget(event);
 
     if (anchorTarget && canProcessAnchor(anchorTarget)) {
-      const href = anchorTarget.getAttribute('href')!;
-      const absoluteHref = toAbsoluteUri(href);
+      const anchorHref = anchorTarget.getAttribute('href')!;
+
+      const absoluteHref = toAbsoluteUri(anchorHref);
 
       if (isWithinBaseUriSpace(absoluteHref)) {
         event.preventDefault();
@@ -66,20 +100,47 @@ export function attachToEventDelegator(eventDelegator: EventDelegator): void {
   });
 }
 
+function isSamePageWithHash(absoluteHref: string): boolean {
+  const hashIndex = absoluteHref.indexOf('#');
+  return hashIndex > -1 && location.href.replace(location.hash, '') === absoluteHref.substring(0, hashIndex);
+}
+
+function performScrollToElementOnTheSamePage(absoluteHref : string, replace: boolean, state: string | undefined = undefined): void {
+  saveToBrowserHistory(absoluteHref, replace, state);
+
+  const hashIndex = absoluteHref.indexOf('#');
+  if (hashIndex === absoluteHref.length - 1) {
+    return;
+  }
+
+  const identifier = absoluteHref.substring(hashIndex + 1);
+  scrollToElement(identifier);
+}
+
 // For back-compat, we need to accept multiple overloads
 export function navigateTo(uri: string, options: NavigationOptions): void;
 export function navigateTo(uri: string, forceLoad: boolean): void;
 export function navigateTo(uri: string, forceLoad: boolean, replace: boolean): void;
 export function navigateTo(uri: string, forceLoadOrOptions: NavigationOptions | boolean, replaceIfUsingOldOverload = false): void {
-  const absoluteUri = toAbsoluteUri(uri);
-
   // Normalize the parameters to the newer overload (i.e., using NavigationOptions)
   const options: NavigationOptions = forceLoadOrOptions instanceof Object
     ? forceLoadOrOptions
     : { forceLoad: forceLoadOrOptions, replaceHistoryEntry: replaceIfUsingOldOverload };
 
+  navigateToCore(uri, options);
+}
+
+function navigateToFromDotNet(uri: string, options: NavigationOptions): void {
+  // The location changing callback is called from .NET for programmatic navigations originating from .NET.
+  // In this case, we shouldn't invoke the callback again from the JS side.
+  navigateToCore(uri, options, /* skipLocationChangingCallback */ true);
+}
+
+function navigateToCore(uri: string, options: NavigationOptions, skipLocationChangingCallback = false): void {
+  const absoluteUri = toAbsoluteUri(uri);
+
   if (!options.forceLoad && isWithinBaseUriSpace(absoluteUri)) {
-    performInternalNavigation(absoluteUri, false, options.replaceHistoryEntry);
+    performInternalNavigation(absoluteUri, false, options.replaceHistoryEntry, options.historyEntryState, skipLocationChangingCallback);
   } else {
     // For external navigation, we work in terms of the originally-supplied uri string,
     // not the computed absoluteUri. This is in case there are some special URI formats
@@ -104,7 +165,21 @@ function performExternalNavigation(uri: string, replace: boolean) {
   }
 }
 
-function performInternalNavigation(absoluteInternalHref: string, interceptedLink: boolean, replace: boolean) {
+async function performInternalNavigation(absoluteInternalHref: string, interceptedLink: boolean, replace: boolean, state: string | undefined = undefined, skipLocationChangingCallback = false) {
+  ignorePendingNavigation();
+
+  if (isSamePageWithHash(absoluteInternalHref)) {
+    performScrollToElementOnTheSamePage(absoluteInternalHref, replace, state);
+    return;
+  }
+
+  if (!skipLocationChangingCallback && hasLocationChangingEventListeners) {
+    const shouldContinueNavigation = await notifyLocationChanging(absoluteInternalHref, state, interceptedLink);
+    if (!shouldContinueNavigation) {
+      return;
+    }
+  }
+
   // Since this was *not* triggered by a back/forward gesture (that goes through a different
   // code path starting with a popstate event), we don't want to preserve the current scroll
   // position, so reset it.
@@ -112,19 +187,103 @@ function performInternalNavigation(absoluteInternalHref: string, interceptedLink
   // we render the new page. As a best approximation, wait until the next batch.
   resetScrollAfterNextBatch();
 
+  saveToBrowserHistory(absoluteInternalHref, replace, state);
+
+  await notifyLocationChanged(interceptedLink);
+}
+
+function saveToBrowserHistory(absoluteInternalHref: string, replace: boolean, state: string | undefined = undefined): void {
   if (!replace) {
-    history.pushState(null, /* ignored title */ '', absoluteInternalHref);
+    currentHistoryIndex++;
+    history.pushState({
+      userState: state,
+      _index: currentHistoryIndex,
+    }, /* ignored title */ '', absoluteInternalHref);
   } else {
-    history.replaceState(null, /* ignored title */ '', absoluteInternalHref);
+    history.replaceState({
+      userState: state,
+      _index: currentHistoryIndex,
+    }, /* ignored title */ '', absoluteInternalHref);
+  }
+}
+
+function navigateHistoryWithoutPopStateCallback(delta: number): Promise<void> {
+  return new Promise(resolve => {
+    const oldPopStateCallback = popStateCallback;
+
+    popStateCallback = () => {
+      popStateCallback = oldPopStateCallback;
+      resolve();
+    };
+
+    history.go(delta);
+  });
+}
+
+function ignorePendingNavigation() {
+  if (resolveCurrentNavigation) {
+    resolveCurrentNavigation(false);
+    resolveCurrentNavigation = null;
+  }
+}
+
+function notifyLocationChanging(uri: string, state: string | undefined, intercepted: boolean): Promise<boolean> {
+  return new Promise<boolean>(resolve => {
+    ignorePendingNavigation();
+
+    if (!notifyLocationChangingCallback) {
+      resolve(false);
+      return;
+    }
+
+    currentLocationChangingCallId++;
+    resolveCurrentNavigation = resolve;
+    notifyLocationChangingCallback(currentLocationChangingCallId, uri, state, intercepted);
+  });
+}
+
+function endLocationChanging(callId: number, shouldContinueNavigation: boolean) {
+  if (resolveCurrentNavigation && callId === currentLocationChangingCallId) {
+    resolveCurrentNavigation(shouldContinueNavigation);
+    resolveCurrentNavigation = null;
+  }
+}
+
+async function onBrowserInitiatedPopState(state: PopStateEvent) {
+  ignorePendingNavigation();
+
+  if (hasLocationChangingEventListeners) {
+    const index = state.state?._index ?? 0;
+    const userState = state.state?.userState;
+    const delta = index - currentHistoryIndex;
+    const uri = location.href;
+
+    // Temporarily revert the navigation until we confirm if the navigation should continue.
+    await navigateHistoryWithoutPopStateCallback(-delta);
+
+    const shouldContinueNavigation = await notifyLocationChanging(uri, userState, false);
+    if (!shouldContinueNavigation) {
+      return;
+    }
+
+    await navigateHistoryWithoutPopStateCallback(delta);
   }
 
-  notifyLocationChanged(interceptedLink);
+  await notifyLocationChanged(false);
 }
 
 async function notifyLocationChanged(interceptedLink: boolean) {
   if (notifyLocationChangedCallback) {
-    await notifyLocationChangedCallback(location.href, interceptedLink);
+    await notifyLocationChangedCallback(location.href, history.state?.userState, interceptedLink);
   }
+}
+
+async function onPopState(state: PopStateEvent) {
+  if (popStateCallback) {
+    await popStateCallback(state);
+  }
+
+  currentHistoryIndex = history.state?._index ?? 0;
 }
 
 let testAnchor: HTMLAnchorElement;
@@ -167,12 +326,15 @@ function findClosestAnchorAncestorLegacy(element: Element | null, tagName: strin
 }
 
 function isWithinBaseUriSpace(href: string) {
-  const baseUriWithTrailingSlash = toBaseUriWithTrailingSlash(document.baseURI!); // TODO: Might baseURI really be null?
-  return href.startsWith(baseUriWithTrailingSlash);
+  const baseUriWithoutTrailingSlash = toBaseUriWithoutTrailingSlash(document.baseURI!);
+  const nextChar = href.charAt(baseUriWithoutTrailingSlash.length);
+
+  return href.startsWith(baseUriWithoutTrailingSlash)
+    && (nextChar === '' || nextChar === '/' || nextChar === '?' || nextChar === '#');
 }
 
-function toBaseUriWithTrailingSlash(baseUri: string) {
-  return baseUri.substr(0, baseUri.lastIndexOf('/') + 1);
+function toBaseUriWithoutTrailingSlash(baseUri: string) {
+  return baseUri.substring(0, baseUri.lastIndexOf('/'));
 }
 
 function eventHasSpecialKey(event: MouseEvent) {
@@ -189,4 +351,5 @@ function canProcessAnchor(anchorTarget: HTMLAnchorElement) {
 export interface NavigationOptions {
   forceLoad: boolean;
   replaceHistoryEntry: boolean;
+  historyEntryState?: string;
 }

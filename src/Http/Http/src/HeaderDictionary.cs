@@ -1,10 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Collections;
-using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
 
@@ -13,6 +13,8 @@ namespace Microsoft.AspNetCore.Http;
 /// <summary>
 /// Represents a wrapper for RequestHeaders and ResponseHeaders.
 /// </summary>
+[DebuggerTypeProxy(typeof(HeaderDictionaryDebugView))]
+[DebuggerDisplay("Count = {Count}")]
 public class HeaderDictionary : IHeaderDictionary
 {
     private static readonly string[] EmptyKeys = Array.Empty<string>();
@@ -75,14 +77,12 @@ public class HeaderDictionary : IHeaderDictionary
             {
                 return value;
             }
+
             return StringValues.Empty;
         }
         set
         {
-            if (key == null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+            ArgumentNullException.ThrowIfNull(key);
             ThrowIfReadOnly();
 
             if (value.Count == 0)
@@ -99,7 +99,15 @@ public class HeaderDictionary : IHeaderDictionary
 
     StringValues IDictionary<string, StringValues>.this[string key]
     {
-        get { return this[key]; }
+        get
+        {
+            if (Store == null)
+            {
+                ThrowKeyNotFoundException();
+            }
+
+            return Store[key];
+        }
         set
         {
             ThrowIfReadOnly();
@@ -201,10 +209,7 @@ public class HeaderDictionary : IHeaderDictionary
     /// <param name="value">The header values.</param>
     public void Add(string key, StringValues value)
     {
-        if (key == null)
-        {
-            throw new ArgumentNullException(nameof(key));
-        }
+        ArgumentNullException.ThrowIfNull(key);
         ThrowIfReadOnly();
         EnsureStore(1);
         Store.Add(key, value);
@@ -369,6 +374,12 @@ public class HeaderDictionary : IHeaderDictionary
         }
     }
 
+    [DoesNotReturn]
+    private static void ThrowKeyNotFoundException()
+    {
+        throw new KeyNotFoundException();
+    }
+
     /// <summary>
     /// Enumerates a <see cref="HeaderDictionary"/>.
     /// </summary>
@@ -433,5 +444,13 @@ public class HeaderDictionary : IHeaderDictionary
                 ((IEnumerator)_dictionaryEnumerator).Reset();
             }
         }
+    }
+
+    private sealed class HeaderDictionaryDebugView(HeaderDictionary dictionary)
+    {
+        private readonly HeaderDictionary _dictionary = dictionary;
+
+        [DebuggerBrowsable(DebuggerBrowsableState.RootHidden)]
+        public KeyValuePair<string, string>[] Items => _dictionary.Select(pair => new KeyValuePair<string, string>(pair.Key, pair.Value.ToString())).ToArray();
     }
 }

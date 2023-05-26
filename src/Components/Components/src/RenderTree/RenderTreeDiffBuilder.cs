@@ -3,8 +3,7 @@
 
 #nullable disable warnings
 
-using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 using Microsoft.AspNetCore.Components.HotReload;
 using Microsoft.AspNetCore.Components.Rendering;
 
@@ -24,7 +23,8 @@ internal static class RenderTreeDiffBuilder
         RenderBatchBuilder batchBuilder,
         int componentId,
         ArrayRange<RenderTreeFrame> oldTree,
-        ArrayRange<RenderTreeFrame> newTree)
+        ArrayRange<RenderTreeFrame> newTree,
+        Dictionary<string, int>? namedEventIndexes)
     {
         var editsBuffer = batchBuilder.EditsBuffer;
         var editsBufferStartLength = editsBuffer.Count;
@@ -34,6 +34,30 @@ internal static class RenderTreeDiffBuilder
 
         var editsSegment = editsBuffer.ToSegment(editsBufferStartLength, editsBuffer.Count);
         var result = new RenderTreeDiff(componentId, editsSegment);
+
+        // Named event handlers name must be unique globally and stable over the time period we are deciding where to
+        // dispatch a given named event.
+        // Once a component has defined a named event handler with a concrete name, no other component instance can
+        // define a named event handler with that name.
+        //
+        // At this stage, we only ensure that the named event handler is unique per component instance, as that,
+        // combined with the check that the EndpointRenderer does, is enough to ensure the uniqueness and the stability
+        // of the named event handler over time **globally**.
+        //
+        // Tracking and uniqueness are enforced when we are trying to dispatch an event to a named event handler, since in
+        // any other case we don't actually track the named event handlers. We do this because:
+        // 1) We don't want to break the user's app if we don't have to.
+        // 2) We don't have to pay the cost of continously tracking all events all the time to throw.
+        // That's why raising the error is delayed until we are forced to make a decission.
+        if (namedEventIndexes != null)
+        {
+            foreach (var (name, index) in namedEventIndexes)
+            {
+                ref var frame = ref newTree.Array[index];
+                renderer.TrackNamedEventId(frame.AttributeEventHandlerId, componentId, name);
+            }
+        }
+
         return result;
     }
 
@@ -140,18 +164,43 @@ internal static class RenderTreeDiffBuilder
                             keyedItemInfos[oldKey] = oldKeyItemInfo.WithOldSiblingIndex(diffContext.SiblingIndex);
                             keyedItemInfos[newKey] = newKeyItemInfo.WithNewSiblingIndex(diffContext.SiblingIndex);
                         }
-                        else if (!hasMoreNew)
+                        else if (newKey == null)
                         {
-                            // If we've run out of new items, we must be looking at just an old item, so delete it
-                            action = DiffAction.Delete;
+                            // Only the old side is keyed.
+                            // - If it was retained, we're inserting the new (unkeyed) side.
+                            // - If it wasn't retained, we're deleting the old (keyed) side.
+                            action = oldKeyIsInNewTree ? DiffAction.Insert : DiffAction.Delete;
                         }
                         else
                         {
-                            // It's an insertion or a deletion, or both
-                            // If the new key is in both trees, but the old key isn't, then the old item was deleted
-                            // Otherwise, it's either an insertion or *both* insertion+deletion, so pick insertion and get the deletion on the next iteration if needed
+                            // The rationale is complex here because there are a lot of different cases that
+                            // merge together into the same rule.
+                            // | old is keyed | newKeyIsInOldTree | oldKeyIsInNewTree  | Outcome   |
+                            // | ------------ | ----------------- | ------------------ | --------- |
+                            // | false        | true              | n/a - it's unkeyed | Delete    |
+                            // | false        | false             | n/a - it's unkeyed | Insert    |
+                            // | true         | true              | must be false[1]   | Delete    |
+                            // | true         | false             | true               | Insert    |
+                            // | true         | false             | false              | Insert[2] |
+                            // [1] because we already know they were not both retained (checked above)
+                            // [2] because neither was retained, so it's both an insert and a delete, and thus
+                            //     we can pick either one to handle on this iteration, and the other will be
+                            //     found and handled on the next iteration
+                            // So all cases can be handled by the following simple criterion, which is pleasingly
+                            // symetrically opposite the case for newKey==null.
                             action = newKeyIsInOldTree ? DiffAction.Delete : DiffAction.Insert;
                         }
+
+                        // The above logic doesn't explicitly talk about whether or not we've run out of items on either
+                        // side of the comparison. If we do run out of items on either side, the logic should result in
+                        // us picking the remaining items from the other side to insert/delete. The following assertion is
+                        // just to simplify debugging if future logic changes violate this.
+                        Debug.Assert(action switch
+                        {
+                            DiffAction.Insert => hasMoreNew,
+                            DiffAction.Delete => hasMoreOld,
+                            _ => true,
+                        }, "The chosen diff action is illegal because we've run out of items on the side being inserted/deleted");
                     }
                     #endregion
                 }
@@ -509,45 +558,6 @@ internal static class RenderTreeDiffBuilder
         diffContext.AttributeDiffSet.Clear();
     }
 
-    private static void UpdateRetainedChildComponent(
-        ref DiffContext diffContext,
-        int oldComponentIndex,
-        int newComponentIndex)
-    {
-        var oldTree = diffContext.OldTree;
-        var newTree = diffContext.NewTree;
-        ref var oldComponentFrame = ref oldTree[oldComponentIndex];
-        ref var newComponentFrame = ref newTree[newComponentIndex];
-        var componentState = oldComponentFrame.ComponentStateField;
-
-        // Preserve the actual componentInstance
-        newComponentFrame.ComponentStateField = componentState;
-        newComponentFrame.ComponentIdField = componentState.ComponentId;
-
-        // As an important rendering optimization, we want to skip parameter update
-        // notifications if we know for sure they haven't changed/mutated. The
-        // "MayHaveChangedSince" logic is conservative, in that it returns true if
-        // any parameter is of a type we don't know is immutable. In this case
-        // we call SetParameters and it's up to the recipient to implement
-        // whatever change-detection logic they want. Currently we only supply the new
-        // set of parameters and assume the recipient has enough info to do whatever
-        // comparisons it wants with the old values. Later we could choose to pass the
-        // old parameter values if we wanted. By default, components always rerender
-        // after any SetParameters call, which is safe but now always optimal for perf.
-
-        // When performing hot reload, we want to force all components to re-render.
-        // We do this using two mechanisms - we call SetParametersAsync even if the parameters
-        // are unchanged and we ignore ComponentBase.ShouldRender
-
-        var oldParameters = new ParameterView(ParameterViewLifetime.Unbound, oldTree, oldComponentIndex);
-        var newParametersLifetime = new ParameterViewLifetime(diffContext.BatchBuilder);
-        var newParameters = new ParameterView(newParametersLifetime, newTree, newComponentIndex);
-        if (!newParameters.DefinitelyEquals(oldParameters) || (HotReloadManager.Default.MetadataUpdateSupported && diffContext.Renderer.IsRenderingOnMetadataUpdate))
-        {
-            componentState.SetDirectParameters(newParameters);
-        }
-    }
-
     private static int NextSiblingIndex(in RenderTreeFrame frame, int frameIndex)
     {
         switch (frame.FrameTypeField)
@@ -675,11 +685,50 @@ internal static class RenderTreeDiffBuilder
                 {
                     if (oldFrame.ComponentTypeField == newFrame.ComponentTypeField)
                     {
-                        UpdateRetainedChildComponent(
-                            ref diffContext,
-                            oldFrameIndex,
-                            newFrameIndex);
-                        diffContext.SiblingIndex++;
+                        // As an important rendering optimization, we want to skip parameter update
+                        // notifications if we know for sure they haven't changed/mutated. The
+                        // "MayHaveChangedSince" logic is conservative, in that it returns true if
+                        // any parameter is of a type we don't know is immutable. In this case
+                        // we call SetParameters and it's up to the recipient to implement
+                        // whatever change-detection logic they want. Currently we only supply the new
+                        // set of parameters and assume the recipient has enough info to do whatever
+                        // comparisons it wants with the old values. Later we could choose to pass the
+                        // old parameter values if we wanted. By default, components always rerender
+                        // after any SetParameters call, which is safe but now always optimal for perf.
+
+                        // When performing hot reload, we want to force all components to re-render.
+                        // We do this using two mechanisms - we call SetParametersAsync even if the parameters
+                        // are unchanged and we ignore ComponentBase.ShouldRender.
+                        // Furthermore, when a hot reload edit removes component parameters, the component should be
+                        // disposed and reinstantiated. This allows the component's construction logic to correctly
+                        // re-initialize the removed parameter properties.
+
+                        var oldParameters = new ParameterView(ParameterViewLifetime.Unbound, oldTree, oldFrameIndex);
+                        var newParametersLifetime = new ParameterViewLifetime(diffContext.BatchBuilder);
+                        var newParameters = new ParameterView(newParametersLifetime, newTree, newFrameIndex);
+                        var isHotReload = HotReloadManager.Default.MetadataUpdateSupported && diffContext.Renderer.IsRenderingOnMetadataUpdate;
+
+                        if (isHotReload && newParameters.HasRemovedDirectParameters(oldParameters))
+                        {
+                            // Components with parameters removed during a hot reload edit should be disposed and reinstantiated
+                            RemoveOldFrame(ref diffContext, oldFrameIndex);
+                            InsertNewFrame(ref diffContext, newFrameIndex);
+                        }
+                        else
+                        {
+                            var componentState = oldFrame.ComponentStateField;
+
+                            // Preserve the actual componentInstance
+                            newFrame.ComponentStateField = componentState;
+                            newFrame.ComponentIdField = componentState.ComponentId;
+
+                            if (!newParameters.DefinitelyEquals(oldParameters) || isHotReload)
+                            {
+                                componentState.SetDirectParameters(newParameters);
+                            }
+
+                            diffContext.SiblingIndex++;
+                        }
                     }
                     else
                     {
@@ -903,15 +952,8 @@ internal static class RenderTreeDiffBuilder
     {
         var frames = diffContext.NewTree;
         ref var frame = ref frames[frameIndex];
-
-        if (frame.ComponentStateField != null)
-        {
-            throw new InvalidOperationException($"Child component already exists during {nameof(InitializeNewComponentFrame)}");
-        }
-
         var parentComponentId = diffContext.ComponentId;
-        diffContext.Renderer.InstantiateChildComponentOnFrame(ref frame, parentComponentId);
-        var childComponentState = frame.ComponentStateField;
+        var childComponentState = diffContext.Renderer.InstantiateChildComponentOnFrame(ref frame, parentComponentId);
 
         // Set initial parameters
         var initialParametersLifetime = new ParameterViewLifetime(diffContext.BatchBuilder);

@@ -340,8 +340,8 @@ public partial class HttpConnectionTests
                 {
                     firstNegotiate = false;
 
-                        // The first negotiate requires an access token
-                        if (request.Headers.Authorization?.Parameter != "firstSecret")
+                    // The first negotiate requires an access token
+                    if (request.Headers.Authorization?.Parameter != "firstSecret")
                     {
                         return ResponseUtils.CreateResponse(HttpStatusCode.Unauthorized);
                     }
@@ -354,8 +354,8 @@ public partial class HttpConnectionTests
                         }));
                 }
 
-                    // All other requests require an access token
-                    if (request.Headers.Authorization?.Parameter != "secondSecret")
+                // All other requests require an access token
+                if (request.Headers.Authorization?.Parameter != "secondSecret")
                 {
                     return ResponseUtils.CreateResponse(HttpStatusCode.Unauthorized);
                 }
@@ -377,8 +377,8 @@ public partial class HttpConnectionTests
 
             testHttpHandler.OnLongPoll((request, token) =>
             {
-                    // All other requests require an access token
-                    if (request.Headers.Authorization?.Parameter != "secondSecret")
+                // All other requests require an access token
+                if (request.Headers.Authorization?.Parameter != "secondSecret")
                 {
                     return Task.FromResult(ResponseUtils.CreateResponse(HttpStatusCode.Unauthorized));
                 }
@@ -508,7 +508,7 @@ public partial class HttpConnectionTests
 
             var transportFactory = new Mock<ITransportFactory>(MockBehavior.Strict);
 
-            transportFactory.Setup(t => t.CreateTransport(HttpTransportType.LongPolling))
+            transportFactory.Setup(t => t.CreateTransport(HttpTransportType.LongPolling, false))
                 .Returns(new TestTransport(transferFormat: TransferFormat.Text | TransferFormat.Binary));
 
             using (var noErrorScope = new VerifyNoErrorsScope())
@@ -523,7 +523,7 @@ public partial class HttpConnectionTests
         }
 
         [Fact]
-        public async Task StartSkipsOverTransportsThatDoNotSupportTheRequredTransferFormat()
+        public async Task StartSkipsOverTransportsThatDoNotSupportTheRequiredTransferFormat()
         {
             var testHttpHandler = new TestHttpMessageHandler(autoNegotiate: false);
 
@@ -557,7 +557,7 @@ public partial class HttpConnectionTests
 
             var transportFactory = new Mock<ITransportFactory>(MockBehavior.Strict);
 
-            transportFactory.Setup(t => t.CreateTransport(HttpTransportType.LongPolling))
+            transportFactory.Setup(t => t.CreateTransport(HttpTransportType.LongPolling, false))
                 .Returns(new TestTransport(transferFormat: TransferFormat.Text | TransferFormat.Binary));
 
             await WithConnectionAsync(
@@ -593,7 +593,7 @@ public partial class HttpConnectionTests
                     CreateConnection(testHttpHandler, loggerFactory: noErrorScope.LoggerFactory),
                     async (connection) =>
                     {
-                        var exception = await Assert.ThrowsAsync<Exception>(() => connection.StartAsync().DefaultTimeout());
+                        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => connection.StartAsync().DefaultTimeout());
                         Assert.Equal("Test error.", exception.Message);
                     });
             }

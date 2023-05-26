@@ -1,10 +1,8 @@
 ﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Net;
 using System.Net.Http;
-using System.Threading.Tasks;
 using AngleSharp.Dom.Html;
 using AngleSharp.Parser.Html;
 using Xunit.Sdk;
@@ -71,7 +69,7 @@ public static class HttpClientExtensions
         {
             get
             {
-                return $"Excepted status code {ExpectedStatusCode}. Actual {ActualStatusCode}. Response Content:" + Environment.NewLine + ResponseContent;
+                return $"Expected status code {ExpectedStatusCode}. Actual {ActualStatusCode}. Response Content:" + Environment.NewLine + ResponseContent;
             }
         }
     }

@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.DependencyInjection;
@@ -64,10 +62,7 @@ public class PageConventionCollection : Collection<IPageConvention>
     {
         EnsureValidPageName(pageName);
 
-        if (action == null)
-        {
-            throw new ArgumentNullException(nameof(action));
-        }
+        ArgumentNullException.ThrowIfNull(action);
 
         return Add(new PageApplicationModelConvention(pageName, action));
     }
@@ -98,10 +93,7 @@ public class PageConventionCollection : Collection<IPageConvention>
 
         EnsureValidPageName(pageName);
 
-        if (action == null)
-        {
-            throw new ArgumentNullException(nameof(action));
-        }
+        ArgumentNullException.ThrowIfNull(action);
 
         return Add(new PageApplicationModelConvention(areaName, pageName, action));
     }
@@ -117,10 +109,7 @@ public class PageConventionCollection : Collection<IPageConvention>
     {
         EnsureValidFolderPath(folderPath);
 
-        if (action == null)
-        {
-            throw new ArgumentNullException(nameof(action));
-        }
+        ArgumentNullException.ThrowIfNull(action);
 
         return Add(new FolderApplicationModelConvention(folderPath, action));
     }
@@ -151,10 +140,7 @@ public class PageConventionCollection : Collection<IPageConvention>
 
         EnsureValidFolderPath(folderPath);
 
-        if (action == null)
-        {
-            throw new ArgumentNullException(nameof(action));
-        }
+        ArgumentNullException.ThrowIfNull(action);
 
         return Add(new FolderApplicationModelConvention(areaName, folderPath, action));
     }
@@ -170,10 +156,7 @@ public class PageConventionCollection : Collection<IPageConvention>
     {
         EnsureValidPageName(pageName);
 
-        if (action == null)
-        {
-            throw new ArgumentNullException(nameof(action));
-        }
+        ArgumentNullException.ThrowIfNull(action);
 
         return Add(new PageRouteModelConvention(pageName, action));
     }
@@ -201,10 +184,7 @@ public class PageConventionCollection : Collection<IPageConvention>
 
         EnsureValidPageName(pageName);
 
-        if (action == null)
-        {
-            throw new ArgumentNullException(nameof(action));
-        }
+        ArgumentNullException.ThrowIfNull(action);
 
         return Add(new PageRouteModelConvention(areaName, pageName, action));
     }
@@ -220,10 +200,7 @@ public class PageConventionCollection : Collection<IPageConvention>
     {
         EnsureValidFolderPath(folderPath);
 
-        if (action == null)
-        {
-            throw new ArgumentNullException(nameof(action));
-        }
+        ArgumentNullException.ThrowIfNull(action);
 
         return Add(new FolderRouteModelConvention(folderPath, action));
     }
@@ -251,10 +228,7 @@ public class PageConventionCollection : Collection<IPageConvention>
 
         EnsureValidFolderPath(folderPath);
 
-        if (action == null)
-        {
-            throw new ArgumentNullException(nameof(action));
-        }
+        ArgumentNullException.ThrowIfNull(action);
 
         return Add(new FolderRouteModelConvention(areaName, folderPath, action));
     }
@@ -289,12 +263,12 @@ public class PageConventionCollection : Collection<IPageConvention>
     {
         if (string.IsNullOrEmpty(pageName))
         {
-            throw new ArgumentException(Resources.ArgumentCannotBeNullOrEmpty, nameof(pageName));
+            throw new ArgumentException(Resources.ArgumentCannotBeNullOrEmpty, argumentName);
         }
 
         if (pageName[0] != '/' || pageName.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase))
         {
-            throw new ArgumentException(Resources.FormatInvalidValidPageName(pageName), nameof(pageName));
+            throw new ArgumentException(Resources.FormatInvalidValidPageName(pageName), argumentName);
         }
     }
 
@@ -318,7 +292,7 @@ public class PageConventionCollection : Collection<IPageConvention>
         return convention;
     }
 
-    private class PageRouteModelConvention : IPageRouteModelConvention
+    private sealed class PageRouteModelConvention : IPageRouteModelConvention
     {
         private readonly string? _areaName;
         private readonly string _path;
@@ -346,7 +320,7 @@ public class PageConventionCollection : Collection<IPageConvention>
         }
     }
 
-    private class FolderRouteModelConvention : IPageRouteModelConvention
+    private sealed class FolderRouteModelConvention : IPageRouteModelConvention
     {
         private readonly string? _areaName;
         private readonly string _folderPath;
@@ -374,7 +348,7 @@ public class PageConventionCollection : Collection<IPageConvention>
         }
     }
 
-    private class PageApplicationModelConvention : IPageApplicationModelConvention
+    private sealed class PageApplicationModelConvention : IPageApplicationModelConvention
     {
         private readonly string? _areaName;
         private readonly string _path;
@@ -402,7 +376,7 @@ public class PageConventionCollection : Collection<IPageConvention>
         }
     }
 
-    private class FolderApplicationModelConvention : IPageApplicationModelConvention
+    private sealed class FolderApplicationModelConvention : IPageApplicationModelConvention
     {
         private readonly string? _areaName;
         private readonly string _folderPath;

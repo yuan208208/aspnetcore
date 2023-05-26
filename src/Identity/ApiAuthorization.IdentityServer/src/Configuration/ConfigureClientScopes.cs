@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Linq;
 using Duende.IdentityServer.Models;
 using Microsoft.Extensions.Logging;
@@ -9,9 +8,9 @@ using Microsoft.Extensions.Options;
 
 namespace Microsoft.AspNetCore.ApiAuthorization.IdentityServer.Configuration;
 
-internal class ConfigureClientScopes : IPostConfigureOptions<ApiAuthorizationOptions>
+internal sealed class ConfigureClientScopes : IPostConfigureOptions<ApiAuthorizationOptions>
 {
-    private static readonly char[] DefaultClientListSeparator = new char[] { ' ' };
+    private const char DefaultClientListSeparator = ' ';
     private readonly ILogger<ConfigureClientScopes> _logger;
 
     public ConfigureClientScopes(ILogger<ConfigureClientScopes> logger)
@@ -31,24 +30,33 @@ internal class ConfigureClientScopes : IPostConfigureOptions<ApiAuthorizationOpt
         {
             if (!identityResource.Properties.TryGetValue(ApplicationProfilesPropertyNames.Clients, out var clientList))
             {
-                _logger.LogInformation(LoggerEventIds.AllowedApplicationNotDefienedForIdentityResource, "Identity resource '{IdentityResourceName}' doesn't define a list of allowed applications.", identityResource.Name);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(LoggerEventIds.AllowedApplicationNotDefienedForIdentityResource, "Identity resource '{IdentityResourceName}' doesn't define a list of allowed applications.", identityResource.Name);
+                }
                 continue;
             }
 
             var resourceClients = clientList.Split(DefaultClientListSeparator, StringSplitOptions.RemoveEmptyEntries);
             if (resourceClients.Length == 0)
             {
-                _logger.LogInformation(LoggerEventIds.AllowedApplicationNotDefienedForIdentityResource, "Identity resource '{IdentityResourceName}' doesn't define a list of allowed applications.", identityResource.Name);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(LoggerEventIds.AllowedApplicationNotDefienedForIdentityResource, "Identity resource '{IdentityResourceName}' doesn't define a list of allowed applications.", identityResource.Name);
+                }
                 continue;
             }
 
-            if (resourceClients.Length == 1 && resourceClients[0] == ApplicationProfilesPropertyValues.AllowAllApplications)
+            if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation(LoggerEventIds.AllApplicationsAllowedForIdentityResource, "Identity resource '{IdentityResourceName}' allows all applications.", identityResource.Name);
-            }
-            else
-            {
-                _logger.LogInformation(LoggerEventIds.ApplicationsAllowedForIdentityResource, "Identity resource '{IdentityResourceName}' allows applications '{ResourceClients}'.", identityResource.Name, string.Join(" ", resourceClients));
+                if (resourceClients.Length == 1 && resourceClients[0] == ApplicationProfilesPropertyValues.AllowAllApplications)
+                {
+                    _logger.LogInformation(LoggerEventIds.AllApplicationsAllowedForIdentityResource, "Identity resource '{IdentityResourceName}' allows all applications.", identityResource.Name);
+                }
+                else
+                {
+                    _logger.LogInformation(LoggerEventIds.ApplicationsAllowedForIdentityResource, "Identity resource '{IdentityResourceName}' allows applications '{ResourceClients}'.", identityResource.Name, string.Join(" ", resourceClients));
+                }
             }
 
             foreach (var client in options.Clients)
@@ -68,24 +76,33 @@ internal class ConfigureClientScopes : IPostConfigureOptions<ApiAuthorizationOpt
         {
             if (!resource.Properties.TryGetValue(ApplicationProfilesPropertyNames.Clients, out var clientList))
             {
-                _logger.LogInformation(LoggerEventIds.AllowedApplicationNotDefienedForApiResource, "Resource '{ApiResourceName}' doesn't define a list of allowed applications.", resource.Name);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(LoggerEventIds.AllowedApplicationNotDefienedForApiResource, "Resource '{ApiResourceName}' doesn't define a list of allowed applications.", resource.Name);
+                }
                 continue;
             }
 
             var resourceClients = clientList.Split(DefaultClientListSeparator, StringSplitOptions.RemoveEmptyEntries);
             if (resourceClients.Length == 0)
             {
-                _logger.LogInformation(LoggerEventIds.AllowedApplicationNotDefienedForApiResource, "Resource '{ApiResourceName}' doesn't define a list of allowed applications.", resource.Name);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(LoggerEventIds.AllowedApplicationNotDefienedForApiResource, "Resource '{ApiResourceName}' doesn't define a list of allowed applications.", resource.Name);
+                }
                 continue;
             }
 
-            if (resourceClients.Length == 1 && resourceClients[0] == ApplicationProfilesPropertyValues.AllowAllApplications)
+            if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation(LoggerEventIds.AllApplicationsAllowedForApiResource, "Resource '{ApiResourceName}' allows all applications.", resource.Name);
-            }
-            else
-            {
-                _logger.LogInformation(LoggerEventIds.ApplicationsAllowedForApiResource, "Resource '{ApiResourceName}' allows applications '{resourceClients}'.", resource.Name, string.Join(" ", resourceClients));
+                if (resourceClients.Length == 1 && resourceClients[0] == ApplicationProfilesPropertyValues.AllowAllApplications)
+                {
+                    _logger.LogInformation(LoggerEventIds.AllApplicationsAllowedForApiResource, "Resource '{ApiResourceName}' allows all applications.", resource.Name);
+                }
+                else
+                {
+                    _logger.LogInformation(LoggerEventIds.ApplicationsAllowedForApiResource, "Resource '{ApiResourceName}' allows applications '{resourceClients}'.", resource.Name, string.Join(" ", resourceClients));
+                }
             }
 
             foreach (var client in options.Clients)

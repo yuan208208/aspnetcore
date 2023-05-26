@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 
@@ -24,15 +22,8 @@ public class PageParameterModel : ParameterModelBase, ICommonModel, IBindingMode
         IReadOnlyList<object> attributes)
         : base(parameterInfo.ParameterType, attributes)
     {
-        if (parameterInfo == null)
-        {
-            throw new ArgumentNullException(nameof(parameterInfo));
-        }
-
-        if (attributes == null)
-        {
-            throw new ArgumentNullException(nameof(attributes));
-        }
+        ArgumentNullException.ThrowIfNull(parameterInfo);
+        ArgumentNullException.ThrowIfNull(attributes);
 
         ParameterInfo = parameterInfo;
     }
@@ -44,10 +35,7 @@ public class PageParameterModel : ParameterModelBase, ICommonModel, IBindingMode
     public PageParameterModel(PageParameterModel other)
         : base(other)
     {
-        if (other == null)
-        {
-            throw new ArgumentNullException(nameof(other));
-        }
+        ArgumentNullException.ThrowIfNull(other);
 
         Handler = other.Handler;
         ParameterInfo = other.ParameterInfo;

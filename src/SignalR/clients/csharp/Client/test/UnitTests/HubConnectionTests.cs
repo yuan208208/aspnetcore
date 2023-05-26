@@ -1,14 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Buffers;
-using System.IO;
+using System.IO.Pipelines;
 using System.Net;
 using System.Net.WebSockets;
-using System.Threading;
 using System.Threading.Channels;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http.Connections.Client;
@@ -19,7 +16,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Testing;
 using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.SignalR.Client.Tests;
 
@@ -221,6 +217,29 @@ public partial class HubConnectionTests : VerifiableLoggedTest
     }
 
     [Fact]
+    public async Task SendAsyncCanceledWhenTokenCanceledDuringSend()
+    {
+        using (StartVerifiableLog())
+        {
+            // Use pause threshold to block FlushAsync when writing 100+ bytes
+            var connection = new TestConnection(pipeOptions: new PipeOptions(readerScheduler: PipeScheduler.Inline, writerScheduler: PipeScheduler.Inline, pauseWriterThreshold: 100, useSynchronizationContext: false));
+            var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+
+            await hubConnection.StartAsync().DefaultTimeout();
+
+            var cts = new CancellationTokenSource();
+            // Send 100+ bytes to trigger pauseWriterThreshold
+            var sendTask = hubConnection.SendAsync("testMethod", new byte[100], cts.Token);
+
+            cts.Cancel();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => sendTask.DefaultTimeout());
+
+            await hubConnection.StopAsync().DefaultTimeout();
+        }
+    }
+
+    [Fact]
     public async Task StreamAsChannelAsyncCanceledWhenPassedCanceledToken()
     {
         using (StartVerifiableLog())
@@ -285,6 +304,40 @@ public partial class HubConnectionTests : VerifiableLoggedTest
             }
             // Cancel after stream is completed but before the AsyncEnumerator is disposed
             cts.Cancel();
+        }
+    }
+
+    [Fact]
+    public async Task CanCancelTokenDuringStream_SendsCancelInvocation()
+    {
+        using (StartVerifiableLog())
+        {
+            var connection = new TestConnection();
+            var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+
+            await hubConnection.StartAsync().DefaultTimeout();
+
+            using var cts = new CancellationTokenSource();
+            var asyncEnumerable = hubConnection.StreamAsync<int>("Stream", 1, cts.Token);
+
+            await using var e = asyncEnumerable.GetAsyncEnumerator(cts.Token);
+            var task = e.MoveNextAsync();
+
+            var item = await connection.ReadSentJsonAsync().DefaultTimeout();
+            var invocationId = item["invocationId"];
+            await connection.ReceiveJsonMessage(
+                new { type = HubProtocolConstants.StreamItemMessageType, invocationId, item = 1 }
+                ).DefaultTimeout();
+
+            await task.DefaultTimeout();
+            cts.Cancel();
+
+            item = await connection.ReadSentJsonAsync().DefaultTimeout();
+            Assert.Equal(HubProtocolConstants.CancelInvocationMessageType, item["type"]);
+            Assert.Equal(invocationId, item["invocationId"]);
+
+            // Stream on client-side completes on cancellation
+            await Assert.ThrowsAsync<TaskCanceledException>(async () => await e.MoveNextAsync()).DefaultTimeout();
         }
     }
 
@@ -546,6 +599,40 @@ public partial class HubConnectionTests : VerifiableLoggedTest
 
     [Fact]
     [LogLevel(LogLevel.Trace)]
+    public async Task ActiveUploadStreamWhenConnectionClosesObservesException()
+    {
+        using (StartVerifiableLog())
+        {
+            var connection = new TestConnection();
+            var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+            await hubConnection.StartAsync().DefaultTimeout();
+
+            var channel = Channel.CreateUnbounded<int>();
+            var invokeTask = hubConnection.InvokeAsync<object>("UploadMethod", channel.Reader);
+
+            var invokeMessage = await connection.ReadSentJsonAsync().DefaultTimeout();
+            Assert.Equal(HubProtocolConstants.InvocationMessageType, invokeMessage["type"]);
+
+            // Not sure how to test for unobserved task exceptions, best I could come up with is to check that we log where there once was an unobserved task exception
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            TestSink.MessageLogged += wc =>
+            {
+                if (wc.EventId.Name == "CompletingStreamNotSent")
+                {
+                    tcs.SetResult();
+                }
+            };
+
+            await hubConnection.StopAsync();
+
+            await Assert.ThrowsAsync<TaskCanceledException>(() => invokeTask).DefaultTimeout();
+
+            await tcs.Task.DefaultTimeout();
+        }
+    }
+
+    [Fact]
+    [LogLevel(LogLevel.Trace)]
     public async Task InvocationCanCompleteBeforeStreamCompletes()
     {
         using (StartVerifiableLog())
@@ -624,8 +711,8 @@ public partial class HubConnectionTests : VerifiableLoggedTest
             {
                 try
                 {
-                        // This should be canceled when the connection is closed
-                        await hubConnection.InvokeAsync<string>("Echo", msg).DefaultTimeout();
+                    // This should be canceled when the connection is closed
+                    await hubConnection.InvokeAsync<string>("Echo", msg).DefaultTimeout();
                 }
                 catch (Exception ex)
                 {
@@ -711,6 +798,42 @@ public partial class HubConnectionTests : VerifiableLoggedTest
             Assert.Same(originalOptions.AccessTokenProvider, accessTokenFactory);
             Assert.Same(resolvedOptions.Headers, originalOptions.Headers);
             Assert.Contains(fakeHeader, resolvedOptions.Headers);
+        }
+    }
+
+    [Fact]
+    [LogLevel(LogLevel.Trace)]
+    public async Task ClientResultResponseAfterConnectionCloseObservesException()
+    {
+        using (StartVerifiableLog())
+        {
+            var connection = new TestConnection();
+            var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+            await hubConnection.StartAsync().DefaultTimeout();
+
+            var resultTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            hubConnection.On("Result", async () =>
+            {
+                await resultTcs.Task;
+                return 1;
+            });
+
+            await connection.ReceiveTextAsync("{\"type\":1,\"invocationId\":\"1\",\"target\":\"Result\",\"arguments\":[]}\u001e").DefaultTimeout();
+
+            // Not sure how to test for unobserved task exceptions, best I could come up with is to check that we log where there once was an unobserved task exception
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            TestSink.MessageLogged += wc =>
+            {
+                if (wc.EventId.Name == "ErrorSendingInvocationResult")
+                {
+                    tcs.SetResult();
+                }
+            };
+
+            await hubConnection.StopAsync();
+            resultTcs.SetResult();
+
+            await tcs.Task.DefaultTimeout();
         }
     }
 

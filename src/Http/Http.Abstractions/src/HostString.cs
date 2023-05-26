@@ -1,8 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using Microsoft.AspNetCore.Http.Abstractions;
 using Microsoft.Extensions.Primitives;
@@ -13,6 +12,7 @@ namespace Microsoft.AspNetCore.Http;
 /// Represents the host portion of a URI can be used to construct URI's properly formatted and encoded for use in
 /// HTTP headers.
 /// </summary>
+[DebuggerDisplay("{Value}")]
 public readonly struct HostString : IEquatable<HostString>
 {
     private readonly string _value;
@@ -34,10 +34,7 @@ public readonly struct HostString : IEquatable<HostString>
     /// <param name="port">A positive, greater than 0 value representing the port in the host string.</param>
     public HostString(string host, int port)
     {
-        if (host == null)
-        {
-            throw new ArgumentNullException(nameof(host));
-        }
+        ArgumentNullException.ThrowIfNull(host);
 
         if (port <= 0)
         {
@@ -45,7 +42,7 @@ public readonly struct HostString : IEquatable<HostString>
         }
 
         int index;
-        if (host.IndexOf('[') == -1
+        if (!host.Contains('[')
             && (index = host.IndexOf(':')) >= 0
             && index < host.Length - 1
             && host.IndexOf(':', index + 1) >= 0)
@@ -82,7 +79,7 @@ public readonly struct HostString : IEquatable<HostString>
     {
         get
         {
-            GetParts(_value, out var host, out var port);
+            GetParts(_value, out var host, out _);
 
             return host.ToString();
         }
@@ -96,7 +93,7 @@ public readonly struct HostString : IEquatable<HostString>
     {
         get
         {
-            GetParts(_value, out var host, out var port);
+            GetParts(_value, out _, out var port);
 
             if (!StringSegment.IsNullOrEmpty(port)
                 && int.TryParse(port.AsSpan(), NumberStyles.None, CultureInfo.InvariantCulture, out var p))
@@ -164,7 +161,7 @@ public readonly struct HostString : IEquatable<HostString>
         if (!string.IsNullOrEmpty(uriComponent))
         {
             int index;
-            if (uriComponent.IndexOf('[') >= 0)
+            if (uriComponent.Contains('['))
             {
                 // IPv6 in brackets [::1], maybe with port
             }
@@ -174,7 +171,7 @@ public readonly struct HostString : IEquatable<HostString>
             {
                 // IPv6 without brackets ::1 is the only type of host with 2 or more colons
             }
-            else if (uriComponent.IndexOf("xn--", StringComparison.Ordinal) >= 0)
+            else if (uriComponent.Contains("xn--", StringComparison.Ordinal))
             {
                 // Contains punycode
                 if (index >= 0)
@@ -202,10 +199,7 @@ public readonly struct HostString : IEquatable<HostString>
     /// <returns>The <see cref="HostString"/> that was created.</returns>
     public static HostString FromUriComponent(Uri uri)
     {
-        if (uri == null)
-        {
-            throw new ArgumentNullException(nameof(uri));
-        }
+        ArgumentNullException.ThrowIfNull(uri);
 
         return new HostString(uri.GetComponents(
             UriComponents.NormalizedHost | // Always convert punycode to Unicode.
@@ -233,10 +227,7 @@ public readonly struct HostString : IEquatable<HostString>
         {
             throw new ArgumentNullException(nameof(value));
         }
-        if (patterns == null)
-        {
-            throw new ArgumentNullException(nameof(patterns));
-        }
+        ArgumentNullException.ThrowIfNull(patterns);
 
         // Drop the port
         GetParts(value, out var host, out var port);

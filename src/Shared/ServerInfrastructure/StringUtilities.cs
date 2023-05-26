@@ -17,11 +17,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 
 internal static class StringUtilities
 {
-    private static readonly SpanAction<char, IntPtr> s_getAsciiOrUTF8StringNonNullCharacters = GetAsciiStringNonNullCharactersWithMarker;
-    private static readonly SpanAction<char, IntPtr> s_getAsciiStringNonNullCharacters = GetAsciiStringNonNullCharacters;
-    private static readonly SpanAction<char, IntPtr> s_getLatin1StringNonNullCharacters = GetLatin1StringNonNullCharacters;
-    private static readonly SpanAction<char, (string? str, char separator, uint number)> s_populateSpanWithHexSuffix = PopulateSpanWithHexSuffix;
-
     public static unsafe string GetAsciiOrUTF8StringNonNullCharacters(this ReadOnlySpan<byte> span, Encoding defaultEncoding)
     {
         if (span.IsEmpty)
@@ -56,7 +51,7 @@ internal static class StringUtilities
         }
     }
 
-    private static unsafe void GetAsciiStringNonNullCharactersWithMarker(Span<char> buffer, IntPtr state)
+    private static readonly unsafe SpanAction<char, IntPtr> s_getAsciiOrUTF8StringNonNullCharacters = (Span<char> buffer, IntPtr state) =>
     {
         fixed (char* output = &MemoryMarshal.GetReference(buffer))
         {
@@ -68,7 +63,7 @@ internal static class StringUtilities
                 output[0] = '\0';
             }
         }
-    }
+    };
 
     public static unsafe string GetAsciiStringNonNullCharacters(this ReadOnlySpan<byte> span)
     {
@@ -83,7 +78,7 @@ internal static class StringUtilities
         }
     }
 
-    private static unsafe void GetAsciiStringNonNullCharacters(Span<char> buffer, IntPtr state)
+    private static readonly unsafe SpanAction<char, IntPtr> s_getAsciiStringNonNullCharacters = (Span<char> buffer, IntPtr state) =>
     {
         fixed (char* output = &MemoryMarshal.GetReference(buffer))
         {
@@ -94,7 +89,7 @@ internal static class StringUtilities
                 throw new InvalidOperationException();
             }
         }
-    }
+    };
 
     public static unsafe string GetLatin1StringNonNullCharacters(this ReadOnlySpan<byte> span)
     {
@@ -109,7 +104,7 @@ internal static class StringUtilities
         }
     }
 
-    private static unsafe void GetLatin1StringNonNullCharacters(Span<char> buffer, IntPtr state)
+    private static readonly unsafe SpanAction<char, IntPtr> s_getLatin1StringNonNullCharacters = (Span<char> buffer, IntPtr state) =>
     {
         fixed (char* output = &MemoryMarshal.GetReference(buffer))
         {
@@ -119,7 +114,7 @@ internal static class StringUtilities
                 throw new InvalidOperationException();
             }
         }
-    }
+    };
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     public static unsafe bool TryGetAsciiString(byte* input, char* output, int count)
@@ -681,7 +676,10 @@ internal static class StringUtilities
         // is not called with an unvalidated string comparitor.
         try
         {
-            if (value is null) return false;
+            if (value is null)
+            {
+                return false;
+            }
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetByteCount(value);
             return !value.Contains('\0');
         }
@@ -709,7 +707,7 @@ internal static class StringUtilities
         return string.Create(length, (str, separator, number), s_populateSpanWithHexSuffix);
     }
 
-    private static void PopulateSpanWithHexSuffix(Span<char> buffer, (string? str, char separator, uint number) tuple)
+    private static readonly SpanAction<char, (string? str, char separator, uint number)> s_populateSpanWithHexSuffix = (Span<char> buffer, (string? str, char separator, uint number) tuple) =>
     {
         var (tupleStr, tupleSeparator, tupleNumber) = tuple;
 
@@ -766,7 +764,7 @@ internal static class StringUtilities
             // This must be explicity typed as ReadOnlySpan<byte>
             // This then becomes a non-allocating mapping to the data section of the assembly.
             // If it is a var, Span<byte> or byte[], it allocates the byte array per call.
-            ReadOnlySpan<byte> hexEncodeMap = new byte[] { (byte)'0', (byte)'1', (byte)'2', (byte)'3', (byte)'4', (byte)'5', (byte)'6', (byte)'7', (byte)'8', (byte)'9', (byte)'A', (byte)'B', (byte)'C', (byte)'D', (byte)'E', (byte)'F' };
+            ReadOnlySpan<byte> hexEncodeMap = "0123456789ABCDEF"u8;
             // Note: this only works with byte due to endian ambiguity for other types,
             // hence the later (char) casts
 
@@ -779,7 +777,7 @@ internal static class StringUtilities
             buffer[1] = (char)hexEncodeMap[(number >> 24) & 0xF];
             buffer[0] = (char)hexEncodeMap[(number >> 28) & 0xF];
         }
-    }
+    };
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)] // Needs a push
     private static bool CheckBytesInAsciiRange(Vector<sbyte> check)

@@ -1,10 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Diagnostics;
-using System.Net;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -18,13 +15,13 @@ using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal;
 
-internal class HttpConnection : ITimeoutHandler
+internal sealed class HttpConnection : ITimeoutHandler
 {
     // Use C#7.3's ReadOnlySpan<byte> optimization for static data https://vcsjones.com/2019/02/01/csharp-readonly-span-bytes-static/
-    private static ReadOnlySpan<byte> Http2Id => new[] { (byte)'h', (byte)'2' };
+    private static ReadOnlySpan<byte> Http2Id => "h2"u8;
 
     private readonly BaseHttpConnectionContext _context;
-    private readonly ISystemClock _systemClock;
+    private readonly TimeProvider _timeProvider;
     private readonly TimeoutControl _timeoutControl;
 
     private readonly object _protocolSelectionLock = new object();
@@ -37,9 +34,9 @@ internal class HttpConnection : ITimeoutHandler
     public HttpConnection(BaseHttpConnectionContext context)
     {
         _context = context;
-        _systemClock = _context.ServiceContext.SystemClock;
+        _timeProvider = _context.ServiceContext.TimeProvider;
 
-        _timeoutControl = new TimeoutControl(this);
+        _timeoutControl = new TimeoutControl(this, _timeProvider);
 
         // Tests override the timeout control sometimes
         _context.TimeoutControl ??= _timeoutControl;
@@ -52,7 +49,7 @@ internal class HttpConnection : ITimeoutHandler
         try
         {
             // Ensure TimeoutControl._lastTimestamp is initialized before anything that could set timeouts runs.
-            _timeoutControl.Initialize(_systemClock.UtcNowTicks);
+            _timeoutControl.Initialize();
 
             IRequestProcessor? requestProcessor = null;
 
@@ -130,13 +127,6 @@ internal class HttpConnection : ITimeoutHandler
         {
             previousState = _protocolSelectionState;
             Debug.Assert(previousState != ProtocolSelectionState.Initializing, "The state should never be initializing");
-
-            switch (_protocolSelectionState)
-            {
-                case ProtocolSelectionState.Selected:
-                case ProtocolSelectionState.Aborted:
-                    break;
-            }
         }
 
         switch (previousState)
@@ -156,13 +146,6 @@ internal class HttpConnection : ITimeoutHandler
         {
             previousState = _protocolSelectionState;
             Debug.Assert(previousState != ProtocolSelectionState.Initializing, "The state should never be initializing");
-
-            switch (_protocolSelectionState)
-            {
-                case ProtocolSelectionState.Selected:
-                case ProtocolSelectionState.Aborted:
-                    break;
-            }
         }
 
         switch (previousState)
@@ -253,10 +236,9 @@ internal class HttpConnection : ITimeoutHandler
             return;
         }
 
-        // It's safe to use UtcNowUnsynchronized since Tick is called by the Heartbeat.
-        var now = _systemClock.UtcNowUnsynchronized;
-        _timeoutControl.Tick(now);
-        _requestProcessor!.Tick(now);
+        var timestamp = _timeProvider.GetTimestamp();
+        _timeoutControl.Tick(timestamp);
+        _requestProcessor!.Tick(timestamp);
     }
 
     public void OnTimeout(TimeoutReason reason)

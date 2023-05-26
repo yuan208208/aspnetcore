@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 #endif
 #if (GenerateApi)
 using Microsoft.Identity.Web;
+using Microsoft.Identity.Abstractions;
 using System.Net;
 #endif
 #if (GenerateGraph)
@@ -36,19 +37,19 @@ public class WeatherForecastController : ControllerBase
     private readonly ILogger<WeatherForecastController> _logger;
 
 #if (GenerateApi)
-    private readonly IDownstreamWebApi _downstreamWebApi;
+    private readonly IDownstreamApi _downstreamApi;
 
     public WeatherForecastController(ILogger<WeatherForecastController> logger,
-                            IDownstreamWebApi downstreamWebApi)
+                            IDownstreamApi downstreamApi)
     {
             _logger = logger;
-        _downstreamWebApi = downstreamWebApi;
+        _downstreamApi = downstreamApi;
     }
 
     [HttpGet]
     public async Task<IEnumerable<WeatherForecast>> Get()
     {
-        using var response = await _downstreamWebApi.CallWebApiForUserAsync("DownstreamApi").ConfigureAwait(false);
+        using var response = await _downstreamApi.CallApiForUserAsync("DownstreamApi").ConfigureAwait(false);
         if (response.StatusCode == System.Net.HttpStatusCode.OK)
         {
             var apiResult = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -62,7 +63,7 @@ public class WeatherForecastController : ControllerBase
 
         return Enumerable.Range(1, 5).Select(index => new WeatherForecast
         {
-            Date = DateTime.Now.AddDays(index),
+            Date = DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
             TemperatureC = Random.Shared.Next(-20, 55),
             Summary = Summaries[Random.Shared.Next(Summaries.Length)]
         })
@@ -86,7 +87,7 @@ public class WeatherForecastController : ControllerBase
 
         return Enumerable.Range(1, 5).Select(index => new WeatherForecast
         {
-            Date = DateTime.Now.AddDays(index),
+            Date = DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
             TemperatureC = Random.Shared.Next(-20, 55),
             Summary = Summaries[Random.Shared.Next(Summaries.Length)]
         })
@@ -103,7 +104,7 @@ public class WeatherForecastController : ControllerBase
     {
         return Enumerable.Range(1, 5).Select(index => new WeatherForecast
         {
-            Date = DateTime.Now.AddDays(index),
+            Date = DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
             TemperatureC = Random.Shared.Next(-20, 55),
             Summary = Summaries[Random.Shared.Next(Summaries.Length)]
         })

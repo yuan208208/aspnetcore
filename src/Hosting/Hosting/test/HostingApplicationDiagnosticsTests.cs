@@ -1,22 +1,127 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
+using System.Diagnostics.Metrics;
+using System.Diagnostics.Tracing;
 using System.Reflection;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Internal;
+using Microsoft.AspNetCore.Testing;
+using Microsoft.Extensions.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace Microsoft.AspNetCore.Hosting.Tests;
 
 public class HostingApplicationDiagnosticsTests
 {
+    [Fact]
+    public async Task EventCountersAndMetricsValues()
+    {
+        // Arrange
+        var hostingEventSource = new HostingEventSource(Guid.NewGuid().ToString());
+
+        var eventListener = new TestCounterListener(new[]
+        {
+            "requests-per-second",
+            "total-requests",
+            "current-requests",
+            "failed-requests"
+        });
+
+        var timeout = !Debugger.IsAttached ? TimeSpan.FromSeconds(30) : Timeout.InfiniteTimeSpan;
+        using CancellationTokenSource timeoutTokenSource = new CancellationTokenSource(timeout);
+
+        var rpsValues = eventListener.GetCounterValues("requests-per-second", timeoutTokenSource.Token).GetAsyncEnumerator();
+        var totalRequestValues = eventListener.GetCounterValues("total-requests", timeoutTokenSource.Token).GetAsyncEnumerator();
+        var currentRequestValues = eventListener.GetCounterValues("current-requests", timeoutTokenSource.Token).GetAsyncEnumerator();
+        var failedRequestValues = eventListener.GetCounterValues("failed-requests", timeoutTokenSource.Token).GetAsyncEnumerator();
+
+        eventListener.EnableEvents(hostingEventSource, EventLevel.Informational, EventKeywords.None,
+            new Dictionary<string, string>
+            {
+                { "EventCounterIntervalSec", "1" }
+            });
+
+        var testMeterFactory1 = new TestMeterFactory();
+        var testMeterFactory2 = new TestMeterFactory();
+
+        var hostingApplication1 = CreateApplication(out var features1, eventSource: hostingEventSource, meterFactory: testMeterFactory1);
+        var hostingApplication2 = CreateApplication(out var features2, eventSource: hostingEventSource, meterFactory: testMeterFactory2);
+
+        using var currentRequestsRecorder1 = new InstrumentRecorder<long>(testMeterFactory1, HostingMetrics.MeterName, "current-requests");
+        using var currentRequestsRecorder2 = new InstrumentRecorder<long>(testMeterFactory2, HostingMetrics.MeterName, "current-requests");
+        using var requestDurationRecorder1 = new InstrumentRecorder<double>(testMeterFactory1, HostingMetrics.MeterName, "request-duration");
+        using var requestDurationRecorder2 = new InstrumentRecorder<double>(testMeterFactory2, HostingMetrics.MeterName, "request-duration");
+
+        // Act/Assert 1
+        var context1 = hostingApplication1.CreateContext(features1);
+        var context2 = hostingApplication2.CreateContext(features2);
+
+        Assert.Equal(2, await totalRequestValues.FirstOrDefault(v => v == 2));
+        Assert.Equal(2, await rpsValues.FirstOrDefault(v => v == 2));
+        Assert.Equal(2, await currentRequestValues.FirstOrDefault(v => v == 2));
+        Assert.Equal(0, await failedRequestValues.FirstOrDefault(v => v == 0));
+
+        hostingApplication1.DisposeContext(context1, null);
+        hostingApplication2.DisposeContext(context2, null);
+
+        Assert.Equal(2, await totalRequestValues.FirstOrDefault(v => v == 2));
+        Assert.Equal(0, await rpsValues.FirstOrDefault(v => v == 0));
+        Assert.Equal(0, await currentRequestValues.FirstOrDefault(v => v == 0));
+        Assert.Equal(0, await failedRequestValues.FirstOrDefault(v => v == 0));
+
+        Assert.Collection(currentRequestsRecorder1.GetMeasurements(),
+            m => Assert.Equal(1, m.Value),
+            m => Assert.Equal(-1, m.Value));
+        Assert.Collection(currentRequestsRecorder2.GetMeasurements(),
+            m => Assert.Equal(1, m.Value),
+            m => Assert.Equal(-1, m.Value));
+        Assert.Collection(requestDurationRecorder1.GetMeasurements(),
+            m => Assert.True(m.Value > 0));
+        Assert.Collection(requestDurationRecorder2.GetMeasurements(),
+            m => Assert.True(m.Value > 0));
+
+        // Act/Assert 2
+        context1 = hostingApplication1.CreateContext(features1);
+        context2 = hostingApplication2.CreateContext(features2);
+
+        Assert.Equal(4, await totalRequestValues.FirstOrDefault(v => v == 4));
+        Assert.Equal(2, await rpsValues.FirstOrDefault(v => v == 2));
+        Assert.Equal(2, await currentRequestValues.FirstOrDefault(v => v == 2));
+        Assert.Equal(0, await failedRequestValues.FirstOrDefault(v => v == 0));
+
+        context1.HttpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context2.HttpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
+
+        hostingApplication1.DisposeContext(context1, null);
+        hostingApplication2.DisposeContext(context2, null);
+
+        Assert.Equal(4, await totalRequestValues.FirstOrDefault(v => v == 4));
+        Assert.Equal(0, await rpsValues.FirstOrDefault(v => v == 0));
+        Assert.Equal(0, await currentRequestValues.FirstOrDefault(v => v == 0));
+        Assert.Equal(2, await failedRequestValues.FirstOrDefault(v => v == 2));
+
+        Assert.Collection(currentRequestsRecorder1.GetMeasurements(),
+            m => Assert.Equal(1, m.Value),
+            m => Assert.Equal(-1, m.Value),
+            m => Assert.Equal(1, m.Value),
+            m => Assert.Equal(-1, m.Value));
+        Assert.Collection(currentRequestsRecorder2.GetMeasurements(),
+            m => Assert.Equal(1, m.Value),
+            m => Assert.Equal(-1, m.Value),
+            m => Assert.Equal(1, m.Value),
+            m => Assert.Equal(-1, m.Value));
+        Assert.Collection(requestDurationRecorder1.GetMeasurements(),
+            m => Assert.True(m.Value > 0),
+            m => Assert.True(m.Value > 0));
+        Assert.Collection(requestDurationRecorder2.GetMeasurements(),
+            m => Assert.True(m.Value > 0),
+            m => Assert.True(m.Value > 0));
+    }
+
     [Fact]
     public void DisposeContextDoesNotThrowWhenContextScopeIsNull()
     {
@@ -52,24 +157,23 @@ public class HostingApplicationDiagnosticsTests
 
         diagnosticListener.Subscribe(new CallbackDiagnosticListener(pair =>
         {
-                // This should not fire
-                if (pair.Key == "Microsoft.AspNetCore.Hosting.HttpRequestIn.Start")
+            // This should not fire
+            if (pair.Key == "Microsoft.AspNetCore.Hosting.HttpRequestIn.Start")
             {
                 startFired = true;
             }
 
-                // This should not fire
-                if (pair.Key == "Microsoft.AspNetCore.Hosting.HttpRequestIn.Stop")
+            // This should not fire
+            if (pair.Key == "Microsoft.AspNetCore.Hosting.HttpRequestIn.Stop")
             {
                 stopFired = true;
             }
         }),
         (s, o, arg3) =>
         {
-                // The events are off
-                return false;
+            // The events are off
+            return false;
         });
-
 
         // Act
         var context = hostingApplication.CreateContext(features);
@@ -362,7 +466,6 @@ public class HostingApplicationDiagnosticsTests
         Assert.Contains(Activity.Current.Baggage, pair => pair.Key == "Key2" && pair.Value == "value4");
     }
 
-
     [Fact]
     public void ActivityBaggagePreservesItemsOrder()
     {
@@ -466,6 +569,50 @@ public class HostingApplicationDiagnosticsTests
     }
 
     [Fact]
+    public void SamplersReceiveCorrectParentAndTraceIds()
+    {
+        var testSource = new ActivitySource(Path.GetRandomFileName());
+        var hostingApplication = CreateApplication(out var features, activitySource: testSource);
+        var parentId = "";
+        var parentSpanId = "";
+        var traceId = "";
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = activitySource => ReferenceEquals(activitySource, testSource),
+            Sample = (ref ActivityCreationOptions<ActivityContext> options) => ComputeActivitySamplingResult(ref options),
+            ActivityStarted = activity =>
+            {
+                parentId = activity.ParentId;
+                parentSpanId = activity.ParentSpanId.ToHexString();
+                traceId = activity.TraceId.ToHexString();
+            }
+        };
+
+        ActivitySource.AddActivityListener(listener);
+
+        features.Set<IHttpRequestFeature>(new HttpRequestFeature()
+        {
+            Headers = new HeaderDictionary()
+                {
+                    {"traceparent", "00-35aae61e3e99044eb5ea5007f2cd159b-40a8bd87c078cb4c-00"},
+                }
+        });
+
+        hostingApplication.CreateContext(features);
+        Assert.Equal("00-35aae61e3e99044eb5ea5007f2cd159b-40a8bd87c078cb4c-00", parentId);
+        Assert.Equal("40a8bd87c078cb4c", parentSpanId);
+        Assert.Equal("35aae61e3e99044eb5ea5007f2cd159b", traceId);
+
+        static ActivitySamplingResult ComputeActivitySamplingResult(ref ActivityCreationOptions<ActivityContext> options)
+        {
+            Assert.Equal("35aae61e3e99044eb5ea5007f2cd159b", options.TraceId.ToHexString());
+            Assert.Equal("40a8bd87c078cb4c", options.Parent.SpanId.ToHexString());
+
+            return ActivitySamplingResult.AllDataAndRecorded;
+        }
+    }
+
+    [Fact]
     public void ActivityOnImportHookIsCalled()
     {
         var diagnosticListener = new DiagnosticListener("DummySource");
@@ -525,7 +672,6 @@ public class HostingApplicationDiagnosticsTests
         Assert.Equal("0123456789abcdef", parentSpanId);
     }
 
-
     private static void AssertProperty<T>(object o, string name)
     {
         Assert.NotNull(o);
@@ -537,12 +683,14 @@ public class HostingApplicationDiagnosticsTests
     }
 
     private static HostingApplication CreateApplication(out FeatureCollection features,
-        DiagnosticListener diagnosticListener = null, ActivitySource activitySource = null, ILogger logger = null, Action<DefaultHttpContext> configure = null)
+        DiagnosticListener diagnosticListener = null, ActivitySource activitySource = null, ILogger logger = null,
+        Action<DefaultHttpContext> configure = null, HostingEventSource eventSource = null, IMeterFactory meterFactory = null)
     {
         var httpContextFactory = new Mock<IHttpContextFactory>();
 
         features = new FeatureCollection();
         features.Set<IHttpRequestFeature>(new HttpRequestFeature());
+        features.Set<IHttpResponseFeature>(new HttpResponseFeature());
         var context = new DefaultHttpContext(features);
         configure?.Invoke(context);
         httpContextFactory.Setup(s => s.Create(It.IsAny<IFeatureCollection>())).Returns(context);
@@ -554,7 +702,9 @@ public class HostingApplicationDiagnosticsTests
             diagnosticListener ?? new NoopDiagnosticListener(),
             activitySource ?? new ActivitySource("Microsoft.AspNetCore"),
             DistributedContextPropagator.CreateDefaultPropagator(),
-            httpContextFactory.Object);
+            httpContextFactory.Object,
+            eventSource ?? HostingEventSource.Log,
+            new HostingMetrics(meterFactory ?? new TestMeterFactory()));
 
         return hostingApplication;
     }

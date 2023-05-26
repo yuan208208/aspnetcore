@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
@@ -34,25 +32,10 @@ public static partial class RouteConstraintMatcher
         RouteDirection routeDirection,
         ILogger logger)
     {
-        if (routeValues == null)
-        {
-            throw new ArgumentNullException(nameof(routeValues));
-        }
-
-        if (httpContext == null)
-        {
-            throw new ArgumentNullException(nameof(httpContext));
-        }
-
-        if (route == null)
-        {
-            throw new ArgumentNullException(nameof(route));
-        }
-
-        if (logger == null)
-        {
-            throw new ArgumentNullException(nameof(logger));
-        }
+        ArgumentNullException.ThrowIfNull(routeValues);
+        ArgumentNullException.ThrowIfNull(httpContext);
+        ArgumentNullException.ThrowIfNull(route);
+        ArgumentNullException.ThrowIfNull(logger);
 
         if (constraints == null || constraints.Count == 0)
         {

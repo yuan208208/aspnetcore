@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Testing;
+using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
 using Xunit;
 
@@ -40,6 +41,28 @@ public class RequestBodyTests
     }
 
     [ConditionalFact]
+    public async Task RequestBody_Read0ByteSync_Success()
+    {
+        string address;
+        using (Utilities.CreateHttpServer(out address, httpContext =>
+        {
+            Assert.True(httpContext.Request.CanHaveBody());
+            byte[] input = new byte[100];
+            httpContext.Features.Get<IHttpBodyControlFeature>().AllowSynchronousIO = true;
+            int read = httpContext.Request.Body.Read(input, 0, 0);
+            Assert.Equal(0, read);
+            read = httpContext.Request.Body.Read(input, 0, input.Length);
+            httpContext.Response.ContentLength = read;
+            httpContext.Response.Body.Write(input, 0, read);
+            return Task.FromResult(0);
+        }))
+        {
+            string response = await SendRequestAsync(address, "Hello World");
+            Assert.Equal("Hello World", response);
+        }
+    }
+
+    [ConditionalFact]
     public async Task RequestBody_ReadAsync_Success()
     {
         string address;
@@ -48,6 +71,26 @@ public class RequestBodyTests
             Assert.True(httpContext.Request.CanHaveBody());
             byte[] input = new byte[100];
             int read = await httpContext.Request.Body.ReadAsync(input, 0, input.Length);
+            httpContext.Response.ContentLength = read;
+            await httpContext.Response.Body.WriteAsync(input, 0, read);
+        }))
+        {
+            string response = await SendRequestAsync(address, "Hello World");
+            Assert.Equal("Hello World", response);
+        }
+    }
+
+    [ConditionalFact]
+    public async Task RequestBody_Read0ByteAsync_Success()
+    {
+        string address;
+        using (Utilities.CreateHttpServer(out address, async httpContext =>
+        {
+            Assert.True(httpContext.Request.CanHaveBody());
+            byte[] input = new byte[100];
+            int read = await httpContext.Request.Body.ReadAsync(input, 0, 0);
+            Assert.Equal(0, read);
+            read = await httpContext.Request.Body.ReadAsync(input, 0, input.Length);
             httpContext.Response.ContentLength = read;
             await httpContext.Response.Body.WriteAsync(input, 0, read);
         }))
@@ -85,11 +128,10 @@ public class RequestBodyTests
             byte[] input = new byte[100];
             Assert.Throws<ArgumentNullException>("buffer", () => httpContext.Request.Body.Read(null, 0, 1));
             Assert.Throws<ArgumentOutOfRangeException>("offset", () => httpContext.Request.Body.Read(input, -1, 1));
-            Assert.Throws<ArgumentOutOfRangeException>("offset", () => httpContext.Request.Body.Read(input, input.Length + 1, 1));
-            Assert.Throws<ArgumentOutOfRangeException>("size", () => httpContext.Request.Body.Read(input, 10, -1));
-            Assert.Throws<ArgumentOutOfRangeException>("size", () => httpContext.Request.Body.Read(input, 0, 0));
-            Assert.Throws<ArgumentOutOfRangeException>("size", () => httpContext.Request.Body.Read(input, 1, input.Length));
-            Assert.Throws<ArgumentOutOfRangeException>("size", () => httpContext.Request.Body.Read(input, 0, input.Length + 1));
+            Assert.Throws<ArgumentOutOfRangeException>("count", () => httpContext.Request.Body.Read(input, input.Length + 1, 1));
+            Assert.Throws<ArgumentOutOfRangeException>("count", () => httpContext.Request.Body.Read(input, 10, -1));
+            Assert.Throws<ArgumentOutOfRangeException>("count", () => httpContext.Request.Body.Read(input, 1, input.Length));
+            Assert.Throws<ArgumentOutOfRangeException>("count", () => httpContext.Request.Body.Read(input, 0, input.Length + 1));
             return Task.FromResult(0);
         }))
         {
@@ -194,7 +236,6 @@ public class RequestBodyTests
         }
     }
 
-
     [ConditionalFact]
     public async Task RequestBody_RemoveHeaderOnEmptyValueSet_Success()
     {
@@ -216,14 +257,14 @@ public class RequestBodyTests
 
         using (Utilities.CreateHttpServer(out var address, httpContext =>
         {
-                // play with standard header
-                httpContext.Request.Headers[HeaderNames.ContentLength] = "123";
+            // play with standard header
+            httpContext.Request.Headers[HeaderNames.ContentLength] = "123";
             CheckHeadersCount(HeaderNames.ContentLength, 1, httpContext.Request);
             Assert.Equal(123, httpContext.Request.ContentLength);
             httpContext.Request.Headers[HeaderNames.ContentLength] = "456";
             CheckHeadersCount(HeaderNames.ContentLength, 1, httpContext.Request);
             Assert.Equal(456, httpContext.Request.ContentLength);
-            httpContext.Request.Headers[HeaderNames.ContentLength] = "";
+            httpContext.Request.Headers[HeaderNames.ContentLength] = StringValues.Empty;
             CheckHeadersCount(HeaderNames.ContentLength, 0, httpContext.Request);
             Assert.Null(httpContext.Request.ContentLength);
             Assert.Equal("", httpContext.Request.Headers[HeaderNames.ContentLength].ToString());
@@ -231,12 +272,12 @@ public class RequestBodyTests
             CheckHeadersCount(HeaderNames.ContentLength, 1, httpContext.Request);
             Assert.Equal(789, httpContext.Request.ContentLength);
 
-                // play with custom header
-                httpContext.Request.Headers["Custom-Header"] = "foo";
+            // play with custom header
+            httpContext.Request.Headers["Custom-Header"] = "foo";
             CheckHeadersCount("Custom-Header", 1, httpContext.Request);
             httpContext.Request.Headers["Custom-Header"] = "bar";
             CheckHeadersCount("Custom-Header", 1, httpContext.Request);
-            httpContext.Request.Headers["Custom-Header"] = "";
+            httpContext.Request.Headers["Custom-Header"] = StringValues.Empty;
             CheckHeadersCount("Custom-Header", 0, httpContext.Request);
             Assert.Equal("", httpContext.Request.Headers["Custom-Header"].ToString());
 

@@ -1,14 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Loader;
-using System.Threading.Tasks;
 using Microsoft.JSInterop;
+using System.Linq;
+using System.Runtime.Versioning;
 
 namespace Microsoft.AspNetCore.Components.WebAssembly.Services;
 
@@ -17,13 +16,8 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Services;
 ///
 /// Supports finding pre-loaded assemblies in a server or pre-rendering context.
 /// </summary>
-public sealed class LazyAssemblyLoader
+public sealed partial class LazyAssemblyLoader
 {
-    internal const string GetLazyAssemblies = "window.Blazor._internal.getLazyAssemblies";
-    internal const string ReadLazyAssemblies = "window.Blazor._internal.readLazyAssemblies";
-    internal const string ReadLazyPDBs = "window.Blazor._internal.readLazyPdbs";
-
-    private readonly IJSRuntime _jsRuntime;
     private HashSet<string>? _loadedAssemblyCache;
 
     /// <summary>
@@ -32,7 +26,6 @@ public sealed class LazyAssemblyLoader
     /// <param name="jsRuntime">The <see cref="IJSRuntime"/>.</param>
     public LazyAssemblyLoader(IJSRuntime jsRuntime)
     {
-        _jsRuntime = jsRuntime;
     }
 
     /// <summary>
@@ -54,7 +47,7 @@ public sealed class LazyAssemblyLoader
         return LoadAssembliesInServerAsync(assembliesToLoad);
     }
 
-    private Task<IEnumerable<Assembly>> LoadAssembliesInServerAsync(IEnumerable<string> assembliesToLoad)
+    private static Task<IEnumerable<Assembly>> LoadAssembliesInServerAsync(IEnumerable<string> assembliesToLoad)
     {
         var loadedAssemblies = new List<Assembly>();
 
@@ -74,6 +67,7 @@ public sealed class LazyAssemblyLoader
     }
 
     [RequiresUnreferencedCode("Types and members the loaded assemblies depend on might be removed")]
+    [SupportedOSPlatform("browser")]
     private async Task<IEnumerable<Assembly>> LoadAssembliesInClientAsync(IEnumerable<string> assembliesToLoad)
     {
         if (_loadedAssemblyCache is null)
@@ -108,35 +102,33 @@ public sealed class LazyAssemblyLoader
             return Array.Empty<Assembly>();
         }
 
-        var jsRuntime = (IJSUnmarshalledRuntime)_jsRuntime;
-        var count = (int)await jsRuntime.InvokeUnmarshalled<string[], Task<object>>(
-           GetLazyAssemblies,
-           newAssembliesToLoad.ToArray());
-
-        if (count == 0)
-        {
-            return Array.Empty<Assembly>();
-        }
-
         var loadedAssemblies = new List<Assembly>();
-        var assemblies = jsRuntime.InvokeUnmarshalled<byte[][]>(ReadLazyAssemblies);
-        var pdbs = jsRuntime.InvokeUnmarshalled<byte[][]>(ReadLazyPDBs);
+        var pendingLoads = newAssembliesToLoad.Select(assemblyToLoad => LoadAssembly(assemblyToLoad, loadedAssemblies));
 
-        for (int i = 0; i < assemblies.Length; i++)
-        {
-            // The runtime loads assemblies into an isolated context by default. As a result,
-            // assemblies that are loaded via Assembly.Load aren't available in the app's context
-            // AKA the default context. To work around this, we explicitly load the assemblies
-            // into the default app context.
-            var assembly = assemblies[i];
-            var pdb = pdbs[i];
-            var loadedAssembly = pdb.Length == 0 ?
-                AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(assembly)) :
-                AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(assembly), new MemoryStream(pdb));
-            loadedAssemblies.Add(loadedAssembly);
-            _loadedAssemblyCache.Add(loadedAssembly.GetName().Name + ".dll");
-        }
-
+        await Task.WhenAll(pendingLoads);
         return loadedAssemblies;
+    }
+
+    [RequiresUnreferencedCode("Types and members the loaded assemblies depend on might be removed")]
+    [SupportedOSPlatform("browser")]
+    private async Task LoadAssembly(string assemblyToLoad, List<Assembly> loadedAssemblies)
+    {
+        using var files = await LazyAssemblyLoaderInterop.LoadLazyAssembly(assemblyToLoad);
+
+        var dllBytes = files.GetPropertyAsByteArray("dll")!;
+        var pdbBytes = files.GetPropertyAsByteArray("pdb");
+        Assembly loadedAssembly = pdbBytes == null
+                    ? AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(dllBytes))
+                    : AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(dllBytes), new MemoryStream(pdbBytes));
+
+        loadedAssemblies.Add(loadedAssembly);
+        _loadedAssemblyCache!.Add(assemblyToLoad);
+
+    }
+
+    private partial class LazyAssemblyLoaderInterop
+    {
+        [JSImport("Blazor._internal.loadLazyAssembly", "blazor-internal")]
+        public static partial Task<JSObject> LoadLazyAssembly(string assemblyToLoad);
     }
 }

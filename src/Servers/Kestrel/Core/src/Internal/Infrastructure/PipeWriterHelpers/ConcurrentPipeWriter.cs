@@ -1,13 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Buffers;
 using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.PipeWriterHelpers;
 
@@ -22,7 +19,7 @@ internal sealed class ConcurrentPipeWriter : PipeWriter
     private const int MaxSegmentPoolSize = 256; // 1MB
     private const int MinimumBufferSize = 4096; // 4K
 
-    private static readonly Exception _successfullyCompletedSentinel = new Exception();
+    private static readonly Exception _successfullyCompletedSentinel = new UnreachableException();
 
     private readonly object _sync;
     private readonly PipeWriter _innerPipeWriter;

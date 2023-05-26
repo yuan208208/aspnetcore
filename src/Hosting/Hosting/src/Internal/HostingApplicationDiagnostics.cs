@@ -1,22 +1,20 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Hosting;
 
-internal class HostingApplicationDiagnostics
+internal sealed class HostingApplicationDiagnostics
 {
-    private static readonly double TimestampToTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
-
     // internal so it can be used in tests
     internal const string ActivityName = "Microsoft.AspNetCore.Hosting.HttpRequestIn";
     private const string ActivityStartKey = ActivityName + ".Start";
@@ -29,18 +27,24 @@ internal class HostingApplicationDiagnostics
     private readonly ActivitySource _activitySource;
     private readonly DiagnosticListener _diagnosticListener;
     private readonly DistributedContextPropagator _propagator;
+    private readonly HostingEventSource _eventSource;
+    private readonly HostingMetrics _metrics;
     private readonly ILogger _logger;
 
     public HostingApplicationDiagnostics(
         ILogger logger,
         DiagnosticListener diagnosticListener,
         ActivitySource activitySource,
-        DistributedContextPropagator propagator)
+        DistributedContextPropagator propagator,
+        HostingEventSource eventSource,
+        HostingMetrics metrics)
     {
         _logger = logger;
         _diagnosticListener = diagnosticListener;
         _activitySource = activitySource;
         _propagator = propagator;
+        _eventSource = eventSource;
+        _metrics = metrics;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -48,9 +52,14 @@ internal class HostingApplicationDiagnostics
     {
         long startTimestamp = 0;
 
-        if (HostingEventSource.Log.IsEnabled())
+        if (_eventSource.IsEnabled() || _metrics.IsEnabled())
         {
-            context.EventLogEnabled = true;
+            context.EventLogOrMetricsEnabled = true;
+            context.MetricsTagsFeature ??= new HttpMetricsTagsFeature();
+            httpContext.Features.Set<IHttpMetricsTagsFeature>(context.MetricsTagsFeature);
+
+            startTimestamp = Stopwatch.GetTimestamp();
+
             // To keep the hot path short we defer logging in this function to non-inlines
             RecordRequestStartEventLog(httpContext);
         }
@@ -59,22 +68,14 @@ internal class HostingApplicationDiagnostics
         var diagnosticListenerActivityCreationEnabled = (diagnosticListenerEnabled && _diagnosticListener.IsEnabled(ActivityName, httpContext));
         var loggingEnabled = _logger.IsEnabled(LogLevel.Critical);
 
-
         if (loggingEnabled || diagnosticListenerActivityCreationEnabled || _activitySource.HasListeners())
         {
             context.Activity = StartActivity(httpContext, loggingEnabled, diagnosticListenerActivityCreationEnabled, out var hasDiagnosticListener);
             context.HasDiagnosticListener = hasDiagnosticListener;
 
-            if (context.Activity is Activity activity)
+            if (context.Activity != null)
             {
-                if (httpContext.Features.Get<IHttpActivityFeature>() is IHttpActivityFeature feature)
-                {
-                    feature.Activity = activity;
-                }
-                else
-                {
-                    httpContext.Features.Set(context.HttpActivityFeature);
-                }
+                httpContext.Features.Set<IHttpActivityFeature>(context.HttpActivityFeature);
             }
         }
 
@@ -82,7 +83,11 @@ internal class HostingApplicationDiagnostics
         {
             if (_diagnosticListener.IsEnabled(DeprecatedDiagnosticsBeginRequestKey))
             {
-                startTimestamp = Stopwatch.GetTimestamp();
+                if (startTimestamp == 0)
+                {
+                    startTimestamp = Stopwatch.GetTimestamp();
+                }
+
                 RecordBeginRequestDiagnostics(httpContext, startTimestamp);
             }
         }
@@ -123,6 +128,25 @@ internal class HostingApplicationDiagnostics
             currentTimestamp = Stopwatch.GetTimestamp();
             // Non-inline
             LogRequestFinished(context, startTimestamp, currentTimestamp);
+
+            if (context.EventLogOrMetricsEnabled)
+            {
+                var route = httpContext.GetEndpoint()?.Metadata.GetMetadata<IRouteDiagnosticsMetadata>()?.Route;
+                var customTags = context.MetricsTagsFeature?.TagsList;
+
+                _metrics.RequestEnd(
+                    httpContext.Request.Protocol,
+                    httpContext.Request.IsHttps,
+                    httpContext.Request.Scheme,
+                    httpContext.Request.Method,
+                    httpContext.Request.Host,
+                    route,
+                    httpContext.Response.StatusCode,
+                    exception,
+                    customTags,
+                    startTimestamp,
+                    currentTimestamp);
+            }
         }
 
         if (_diagnosticListener.IsEnabled())
@@ -151,7 +175,6 @@ internal class HostingApplicationDiagnostics
                     // so call GetTimestamp if currentTimestamp is zero (from above)
                     RecordUnhandledExceptionDiagnostics(httpContext, currentTimestamp, exception);
                 }
-
             }
         }
 
@@ -162,18 +185,18 @@ internal class HostingApplicationDiagnostics
             StopActivity(httpContext, activity, context.HasDiagnosticListener);
         }
 
-        if (context.EventLogEnabled)
+        if (context.EventLogOrMetricsEnabled)
         {
             if (exception != null)
             {
                 // Non-inline
-                HostingEventSource.Log.UnhandledException();
+                _eventSource.UnhandledException();
             }
 
             // Count 500 as failed requests
             if (httpContext.Response.StatusCode >= 500)
             {
-                HostingEventSource.Log.RequestFailed();
+                _eventSource.RequestFailed();
             }
         }
 
@@ -182,12 +205,11 @@ internal class HostingApplicationDiagnostics
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void ContextDisposed(HostingApplication.Context context)
+    public void ContextDisposed(HostingApplication.Context context)
     {
-        if (context.EventLogEnabled)
+        if (context.EventLogOrMetricsEnabled)
         {
-            // Non-inline
-            HostingEventSource.Log.RequestStop();
+            _eventSource.RequestStop();
         }
     }
 
@@ -214,7 +236,7 @@ internal class HostingApplicationDiagnostics
         // so check if we logged the start event
         if (context.StartLog != null)
         {
-            var elapsed = new TimeSpan((long)(TimestampToTicks * (currentTimestamp - startTimestamp)));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp, currentTimestamp);
 
             _logger.Log(
                 logLevel: LogLevel.Information,
@@ -225,63 +247,97 @@ internal class HostingApplicationDiagnostics
         }
     }
 
+    [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026",
+        Justification = "The values being passed into Write have the commonly used properties being preserved with DynamicDependency.")]
+    private static void WriteDiagnosticEvent<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TValue>(
+        DiagnosticSource diagnosticSource, string name, TValue value)
+    {
+        diagnosticSource.Write(name, value);
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void RecordBeginRequestDiagnostics(HttpContext httpContext, long startTimestamp)
     {
-        _diagnosticListener.Write(
+        WriteDiagnosticEvent(
+            _diagnosticListener,
             DeprecatedDiagnosticsBeginRequestKey,
-            new
-            {
-                httpContext = httpContext,
-                timestamp = startTimestamp
-            });
+            new DeprecatedRequestData(httpContext, startTimestamp));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void RecordEndRequestDiagnostics(HttpContext httpContext, long currentTimestamp)
     {
-        _diagnosticListener.Write(
+        WriteDiagnosticEvent(
+            _diagnosticListener,
             DeprecatedDiagnosticsEndRequestKey,
-            new
-            {
-                httpContext = httpContext,
-                timestamp = currentTimestamp
-            });
+            new DeprecatedRequestData(httpContext, currentTimestamp));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void RecordUnhandledExceptionDiagnostics(HttpContext httpContext, long currentTimestamp, Exception exception)
     {
-        _diagnosticListener.Write(
+        WriteDiagnosticEvent(
+            _diagnosticListener,
             DiagnosticsUnhandledExceptionKey,
-            new
-            {
-                httpContext = httpContext,
-                timestamp = currentTimestamp,
-                exception = exception
-            });
+            new UnhandledExceptionData(httpContext, currentTimestamp, exception));
+    }
+
+    private sealed class DeprecatedRequestData
+    {
+        // Common properties. Properties not in this list could be trimmed.
+        [DynamicDependency(nameof(HttpContext.Request), typeof(HttpContext))]
+        [DynamicDependency(nameof(HttpContext.Response), typeof(HttpContext))]
+        [DynamicDependency(nameof(HttpRequest.Path), typeof(HttpRequest))]
+        [DynamicDependency(nameof(HttpRequest.Method), typeof(HttpRequest))]
+        [DynamicDependency(nameof(HttpResponse.StatusCode), typeof(HttpResponse))]
+        internal DeprecatedRequestData(HttpContext httpContext, long timestamp)
+        {
+            this.httpContext = httpContext;
+            this.timestamp = timestamp;
+        }
+
+        // Compatibility with anonymous object property names
+        public HttpContext httpContext { get; }
+        public long timestamp { get; }
+
+        public override string ToString() => $"{{ {nameof(httpContext)} = {httpContext}, {nameof(timestamp)} = {timestamp} }}";
+    }
+
+    private sealed class UnhandledExceptionData
+    {
+        // Common properties. Properties not in this list could be trimmed.
+        [DynamicDependency(nameof(HttpContext.Request), typeof(HttpContext))]
+        [DynamicDependency(nameof(HttpContext.Response), typeof(HttpContext))]
+        [DynamicDependency(nameof(HttpRequest.Path), typeof(HttpRequest))]
+        [DynamicDependency(nameof(HttpRequest.Method), typeof(HttpRequest))]
+        [DynamicDependency(nameof(HttpResponse.StatusCode), typeof(HttpResponse))]
+        internal UnhandledExceptionData(HttpContext httpContext, long timestamp, Exception exception)
+        {
+            this.httpContext = httpContext;
+            this.timestamp = timestamp;
+            this.exception = exception;
+        }
+
+        // Compatibility with anonymous object property names
+        public HttpContext httpContext { get; }
+        public long timestamp { get; }
+        public Exception exception { get; }
+
+        public override string ToString() => $"{{ {nameof(httpContext)} = {httpContext}, {nameof(timestamp)} = {timestamp}, {nameof(exception)} = {exception} }}";
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void RecordRequestStartEventLog(HttpContext httpContext)
+    private void RecordRequestStartEventLog(HttpContext httpContext)
     {
-        HostingEventSource.Log.RequestStart(httpContext.Request.Method, httpContext.Request.Path);
+        _metrics.RequestStart(httpContext.Request.IsHttps, httpContext.Request.Scheme, httpContext.Request.Method, httpContext.Request.Host);
+        _eventSource.RequestStart(httpContext.Request.Method, httpContext.Request.Path);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private Activity? StartActivity(HttpContext httpContext, bool loggingEnabled, bool diagnosticListenerActivityCreationEnabled, out bool hasDiagnosticListener)
     {
-        var activity = _activitySource.CreateActivity(ActivityName, ActivityKind.Server);
-        if (activity is null && (loggingEnabled || diagnosticListenerActivityCreationEnabled))
-        {
-            activity = new Activity(ActivityName);
-        }
         hasDiagnosticListener = false;
 
-        if (activity is null)
-        {
-            return null;
-        }
         var headers = httpContext.Request.Headers;
         _propagator.ExtractTraceIdAndState(headers,
             static (object? carrier, string fieldName, out string? fieldValue, out IEnumerable<string>? fieldValues) =>
@@ -293,9 +349,44 @@ internal class HostingApplicationDiagnostics
             out var requestId,
             out var traceState);
 
+        Activity? activity = null;
+        if (_activitySource.HasListeners())
+        {
+            if (ActivityContext.TryParse(requestId, traceState, isRemote: true, out ActivityContext context))
+            {
+                // The requestId used the W3C ID format. Unfortunately, the ActivitySource.CreateActivity overload that
+                // takes a string parentId never sets HasRemoteParent to true. We work around that by calling the
+                // ActivityContext overload instead which sets HasRemoteParent to parentContext.IsRemote.
+                // https://github.com/dotnet/aspnetcore/pull/41568#discussion_r868733305
+                activity = _activitySource.CreateActivity(ActivityName, ActivityKind.Server, context);
+            }
+            else
+            {
+                // Pass in the ID we got from the headers if there was one.
+                activity = _activitySource.CreateActivity(ActivityName, ActivityKind.Server, string.IsNullOrEmpty(requestId) ? null! : requestId);
+            }
+        }
+
+        if (activity is null)
+        {
+            // CreateActivity didn't create an Activity (this is an optimization for the
+            // case when there are no listeners). Let's create it here if needed.
+            if (loggingEnabled || diagnosticListenerActivityCreationEnabled)
+            {
+                activity = new Activity(ActivityName);
+                if (!string.IsNullOrEmpty(requestId))
+                {
+                    activity.SetParentId(requestId);
+                }
+            }
+            else
+            {
+                return null;
+            }
+        }
+
         if (!string.IsNullOrEmpty(requestId))
         {
-            activity.SetParentId(requestId);
             if (!string.IsNullOrEmpty(traceState))
             {
                 activity.TraceStateString = traceState;
@@ -308,7 +399,7 @@ internal class HostingApplicationDiagnostics
             });
 
             // AddBaggage adds items at the beginning  of the list, so we need to add them in reverse to keep the same order as the client
-            // By contract, the propagator has already reversed the order of items so we need not reverse it again 
+            // By contract, the propagator has already reversed the order of items so we need not reverse it again
             // Order could be important if baggage has two items with the same key (that is allowed by the contract)
             if (baggage is not null)
             {
@@ -348,13 +439,35 @@ internal class HostingApplicationDiagnostics
     }
 
     // These are versions of DiagnosticSource.Start/StopActivity that don't allocate strings per call (see https://github.com/dotnet/corefx/issues/37055)
+    // DynamicDependency matches the properties selected in:
+    // https://github.com/dotnet/diagnostics/blob/7cc6fbef613cdfe5ff64393120d59d7a15e98bd6/src/Microsoft.Diagnostics.Monitoring.EventPipe/Configuration/HttpRequestSourceConfiguration.cs#L20-L33
+    [DynamicDependency(nameof(HttpContext.Request), typeof(HttpContext))]
+    [DynamicDependency(nameof(HttpRequest.Scheme), typeof(HttpRequest))]
+    [DynamicDependency(nameof(HttpRequest.Host), typeof(HttpRequest))]
+    [DynamicDependency(nameof(HttpRequest.PathBase), typeof(HttpRequest))]
+    [DynamicDependency(nameof(HttpRequest.QueryString), typeof(HttpRequest))]
+    [DynamicDependency(nameof(HttpRequest.Path), typeof(HttpRequest))]
+    [DynamicDependency(nameof(HttpRequest.Method), typeof(HttpRequest))]
+    [DynamicDependency(nameof(HttpRequest.Headers), typeof(HttpRequest))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(QueryString))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(HostString))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(PathString))]
+    // OpenTelemetry gets the context from the context using the DefaultHttpContext.HttpContext property.
+    [DynamicDependency(nameof(DefaultHttpContext.HttpContext), typeof(DefaultHttpContext))]
     private Activity StartActivity(Activity activity, HttpContext httpContext)
     {
         activity.Start();
-        _diagnosticListener.Write(ActivityStartKey, httpContext);
+        WriteDiagnosticEvent(_diagnosticListener, ActivityStartKey, httpContext);
         return activity;
     }
 
+    // DynamicDependency matches the properties selected in:
+    // https://github.com/dotnet/diagnostics/blob/7cc6fbef613cdfe5ff64393120d59d7a15e98bd6/src/Microsoft.Diagnostics.Monitoring.EventPipe/Configuration/HttpRequestSourceConfiguration.cs#L35-L38
+    [DynamicDependency(nameof(HttpContext.Response), typeof(HttpContext))]
+    [DynamicDependency(nameof(HttpResponse.StatusCode), typeof(HttpResponse))]
+    [DynamicDependency(nameof(HttpResponse.Headers), typeof(HttpResponse))]
+    // OpenTelemetry gets the context from the context using the DefaultHttpContext.HttpContext property.
+    [DynamicDependency(nameof(DefaultHttpContext.HttpContext), typeof(DefaultHttpContext))]
     private void StopActivity(Activity activity, HttpContext httpContext)
     {
         // Stop sets the end time if it was unset, but we want it set before we issue the write
@@ -363,13 +476,13 @@ internal class HostingApplicationDiagnostics
         {
             activity.SetEndTime(DateTime.UtcNow);
         }
-        _diagnosticListener.Write(ActivityStopKey, httpContext);
+        WriteDiagnosticEvent(_diagnosticListener, ActivityStopKey, httpContext);
         activity.Stop();    // Resets Activity.Current (we want this after the Write)
     }
 
     private static class Log
     {
-        public static IDisposable RequestScope(ILogger logger, HttpContext httpContext)
+        public static IDisposable? RequestScope(ILogger logger, HttpContext httpContext)
         {
             return logger.BeginScope(new HostingLogScope(httpContext));
         }

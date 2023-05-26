@@ -1,9 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Microsoft.AspNetCore.Mvc.Abstractions;
 
 namespace Microsoft.AspNetCore.Mvc.ModelBinding;
@@ -28,10 +27,7 @@ public class BindingInfo
     /// <param name="other">The <see cref="BindingInfo"/> to copy.</param>
     public BindingInfo(BindingInfo other)
     {
-        if (other == null)
-        {
-            throw new ArgumentNullException(nameof(other));
-        }
+        ArgumentNullException.ThrowIfNull(other);
 
         BindingSource = other.BindingSource;
         BinderModelName = other.BinderModelName;
@@ -184,15 +180,8 @@ public class BindingInfo
     /// <returns>A new instance of <see cref="BindingInfo"/> if any binding metadata was discovered; otherwise or <see langword="null"/>.</returns>
     public static BindingInfo? GetBindingInfo(IEnumerable<object> attributes, ModelMetadata modelMetadata)
     {
-        if (attributes == null)
-        {
-            throw new ArgumentNullException(nameof(attributes));
-        }
-
-        if (modelMetadata == null)
-        {
-            throw new ArgumentNullException(nameof(modelMetadata));
-        }
+        ArgumentNullException.ThrowIfNull(attributes);
+        ArgumentNullException.ThrowIfNull(modelMetadata);
 
         var bindingInfo = GetBindingInfo(attributes);
         var isBindingInfoPresent = bindingInfo != null;
@@ -218,10 +207,7 @@ public class BindingInfo
     /// <see langword="false"/> otherwise.</returns>
     public bool TryApplyBindingInfo(ModelMetadata modelMetadata)
     {
-        if (modelMetadata == null)
-        {
-            throw new ArgumentNullException(nameof(modelMetadata));
-        }
+        ArgumentNullException.ThrowIfNull(modelMetadata);
 
         var isBindingInfoPresent = false;
         if (BinderModelName == null && modelMetadata.BinderModelName != null)
@@ -248,13 +234,21 @@ public class BindingInfo
             PropertyFilterProvider = modelMetadata.PropertyFilterProvider;
         }
 
-        // There isn't a ModelMetadata feature to configure AllowEmptyInputInBodyModelBinding,
-        // so nothing to infer from it.
+        // If the EmptyBody behavior is not configured will be inferred
+        // as Allow when the NullablityState == NullablityStateNull or HasDefaultValue
+        // https://github.com/dotnet/aspnetcore/issues/39754
+        if (EmptyBodyBehavior == EmptyBodyBehavior.Default &&
+            BindingSource == BindingSource.Body &&
+            (modelMetadata.NullabilityState == NullabilityState.Nullable || modelMetadata.IsNullableValueType || modelMetadata.HasDefaultValue))
+        {
+            isBindingInfoPresent = true;
+            EmptyBodyBehavior = EmptyBodyBehavior.Allow;
+        }
 
         return isBindingInfoPresent;
     }
 
-    private class CompositePropertyFilterProvider : IPropertyFilterProvider
+    private sealed class CompositePropertyFilterProvider : IPropertyFilterProvider
     {
         private readonly IEnumerable<IPropertyFilterProvider> _providers;
 

@@ -1,12 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Buffers;
 using System.Diagnostics;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Microsoft.AspNetCore.WebUtilities;
 
@@ -39,15 +35,8 @@ internal sealed class MultipartReaderStream : Stream
     /// <param name="bytePool">The ArrayPool pool to use for temporary byte arrays.</param>
     public MultipartReaderStream(BufferedReadStream stream, MultipartBoundary boundary, ArrayPool<byte> bytePool)
     {
-        if (stream == null)
-        {
-            throw new ArgumentNullException(nameof(stream));
-        }
-
-        if (boundary == null)
-        {
-            throw new ArgumentNullException(nameof(boundary));
-        }
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(boundary);
 
         _bytePool = bytePool;
         _innerStream = stream;
@@ -123,6 +112,11 @@ internal sealed class MultipartReaderStream : Stream
     }
 
     public override void Write(byte[] buffer, int offset, int count)
+    {
+        throw new NotSupportedException();
+    }
+
+    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
         throw new NotSupportedException();
     }
@@ -211,7 +205,10 @@ internal sealed class MultipartReaderStream : Stream
         return UpdatePosition(read);
     }
 
-    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
     {
         if (_finished)
         {
@@ -235,7 +232,9 @@ internal sealed class MultipartReaderStream : Stream
             if (matchOffset > bufferedData.Offset)
             {
                 // Sync, it's already buffered
-                read = _innerStream.Read(buffer, offset, Math.Min(count, matchOffset - bufferedData.Offset));
+                var slice = buffer[..Math.Min(buffer.Length, matchOffset - bufferedData.Offset)];
+
+                read = _innerStream.Read(slice.Span);
                 return UpdatePosition(read);
             }
 
@@ -263,7 +262,7 @@ internal sealed class MultipartReaderStream : Stream
         }
 
         // No possible boundary match within the buffered data, return the data from the buffer.
-        read = _innerStream.Read(buffer, offset, Math.Min(count, bufferedData.Count));
+        read = _innerStream.Read(buffer.Span[..Math.Min(buffer.Length, bufferedData.Count)]);
         return UpdatePosition(read);
     }
 
@@ -275,9 +274,6 @@ internal sealed class MultipartReaderStream : Stream
     // 2:      BBBBB
     private bool SubMatch(ArraySegment<byte> segment1, byte[] matchBytes, out int matchOffset, out int matchCount)
     {
-        // clear matchCount to zero
-        matchCount = 0;
-
         // case 1: does segment1 fully contain matchBytes?
         {
             var matchBytesLengthMinusOne = matchBytes.Length - 1;
@@ -301,6 +297,7 @@ internal sealed class MultipartReaderStream : Stream
         // case 2: does segment1 end with the start of matchBytes?
         var segmentEnd = segment1.Offset + segment1.Count;
 
+        // clear matchCount to zero
         matchCount = 0;
         for (; matchOffset < segmentEnd; matchOffset++)
         {

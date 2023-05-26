@@ -1,19 +1,18 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Internal;
+using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Builder;
 
 /// <summary>
 /// Default implementation for <see cref="IApplicationBuilder"/>.
 /// </summary>
-public class ApplicationBuilder : IApplicationBuilder
+public partial class ApplicationBuilder : IApplicationBuilder
 {
     private const string ServerFeaturesKey = "server.Features";
     private const string ApplicationServicesKey = "application.Services";
@@ -24,10 +23,8 @@ public class ApplicationBuilder : IApplicationBuilder
     /// Initializes a new instance of <see cref="ApplicationBuilder"/>.
     /// </summary>
     /// <param name="serviceProvider">The <see cref="IServiceProvider"/> for application services.</param>
-    public ApplicationBuilder(IServiceProvider serviceProvider)
+    public ApplicationBuilder(IServiceProvider serviceProvider) : this(serviceProvider, new FeatureCollection())
     {
-        Properties = new Dictionary<string, object?>(StringComparer.Ordinal);
-        ApplicationServices = serviceProvider;
     }
 
     /// <summary>
@@ -36,8 +33,10 @@ public class ApplicationBuilder : IApplicationBuilder
     /// <param name="serviceProvider">The <see cref="IServiceProvider"/> for application services.</param>
     /// <param name="server">The server instance that hosts the application.</param>
     public ApplicationBuilder(IServiceProvider serviceProvider, object server)
-        : this(serviceProvider)
     {
+        Properties = new Dictionary<string, object?>(StringComparer.Ordinal);
+        ApplicationServices = serviceProvider;
+
         SetProperty(ServerFeaturesKey, server);
     }
 
@@ -64,6 +63,9 @@ public class ApplicationBuilder : IApplicationBuilder
     /// <summary>
     /// Gets the <see cref="IFeatureCollection"/> for server features.
     /// </summary>
+    /// <remarks>
+    /// An empty collection is returned if a server wasn't specified for the application builder.
+    /// </remarks>
     public IFeatureCollection ServerFeatures
     {
         get
@@ -117,11 +119,14 @@ public class ApplicationBuilder : IApplicationBuilder
     /// <returns>The <see cref="RequestDelegate"/>.</returns>
     public RequestDelegate Build()
     {
+        var loggerFactory = ApplicationServices?.GetService<ILoggerFactory>();
+        var logger = loggerFactory?.CreateLogger<ApplicationBuilder>();
+
         RequestDelegate app = context =>
         {
-                // If we reach the end of the pipeline, but we have an endpoint, then something unexpected has happened.
-                // This could happen if user code sets an endpoint, but they forgot to add the UseEndpoint middleware.
-                var endpoint = context.GetEndpoint();
+            // If we reach the end of the pipeline, but we have an endpoint, then something unexpected has happened.
+            // This could happen if user code sets an endpoint, but they forgot to add the UseEndpoint middleware.
+            var endpoint = context.GetEndpoint();
             var endpointRequestDelegate = endpoint?.RequestDelegate;
             if (endpointRequestDelegate != null)
             {
@@ -132,7 +137,25 @@ public class ApplicationBuilder : IApplicationBuilder
                 throw new InvalidOperationException(message);
             }
 
-            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            // Flushing the response and calling through to the next middleware in the pipeline is
+            // a user error, but don't attempt to set the status code if this happens. It leads to a confusing
+            // behavior where the client response looks fine, but the server side logic results in an exception.
+            if (!context.Response.HasStarted)
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+            }
+
+            if (logger != null && logger.IsEnabled(LogLevel.Information))
+            {
+                Log.RequestPipelineEnd(logger,
+                    context.Request.Method,
+                    context.Request.Scheme,
+                    context.Request.Host.Value,
+                    context.Request.PathBase.Value,
+                    context.Request.Path.Value,
+                    context.Response.StatusCode);
+            }
+
             return Task.CompletedTask;
         };
 
@@ -142,5 +165,13 @@ public class ApplicationBuilder : IApplicationBuilder
         }
 
         return app;
+    }
+
+    private static partial class Log
+    {
+        [LoggerMessage(1, LogLevel.Information,
+            "Request reached the end of the middleware pipeline without being handled by application code. Request path: {Method} {Scheme}://{Host}{PathBase}{Path}, Response status code: {StatusCode}",
+            SkipEnabledCheck = true)]
+        public static partial void RequestPipelineEnd(ILogger logger, string method, string scheme, string host, string? pathBase, string? path, int statusCode);
     }
 }

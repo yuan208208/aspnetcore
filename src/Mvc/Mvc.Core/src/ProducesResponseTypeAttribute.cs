@@ -1,7 +1,6 @@
 ﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.Net.Http.Headers;
@@ -48,10 +47,7 @@ public class ProducesResponseTypeAttribute : Attribute, IApiResponseMetadataProv
     /// <param name="additionalContentTypes">Additional content types supported by the response.</param>
     public ProducesResponseTypeAttribute(Type type, int statusCode, string contentType, params string[] additionalContentTypes)
     {
-        if (contentType == null)
-        {
-            throw new ArgumentNullException(nameof(contentType));
-        }
+        ArgumentNullException.ThrowIfNull(contentType);
 
         Type = type ?? throw new ArgumentNullException(nameof(type));
         StatusCode = statusCode;

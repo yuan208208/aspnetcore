@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using Microsoft.Extensions.Primitives;
 
 namespace Microsoft.Net.Http.Headers;
@@ -40,15 +38,8 @@ public class StringWithQualityHeaderValueComparer : IComparer<StringWithQualityH
         StringWithQualityHeaderValue? stringWithQuality1,
         StringWithQualityHeaderValue? stringWithQuality2)
     {
-        if (stringWithQuality1 == null)
-        {
-            throw new ArgumentNullException(nameof(stringWithQuality1));
-        }
-
-        if (stringWithQuality2 == null)
-        {
-            throw new ArgumentNullException(nameof(stringWithQuality2));
-        }
+        ArgumentNullException.ThrowIfNull(stringWithQuality1);
+        ArgumentNullException.ThrowIfNull(stringWithQuality2);
 
         var quality1 = stringWithQuality1.Quality ?? HeaderQuality.Match;
         var quality2 = stringWithQuality2.Quality ?? HeaderQuality.Match;

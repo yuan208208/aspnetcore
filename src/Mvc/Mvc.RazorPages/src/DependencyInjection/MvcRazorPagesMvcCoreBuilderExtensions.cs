@@ -1,7 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using Microsoft.AspNetCore.Mvc.Abstractions;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using Microsoft.AspNetCore.Mvc.Filters;
@@ -26,12 +27,10 @@ public static class MvcRazorPagesMvcCoreBuilderExtensions
     /// </summary>
     /// <param name="builder">The <see cref="IMvcCoreBuilder"/>.</param>
     /// <returns>The <see cref="IMvcCoreBuilder"/>.</returns>
+    [RequiresUnreferencedCode("Razor Pages does not currently support native AOT.", Url = "https://aka.ms/aspnet/nativeaot")]
     public static IMvcCoreBuilder AddRazorPages(this IMvcCoreBuilder builder)
     {
-        if (builder == null)
-        {
-            throw new ArgumentNullException(nameof(builder));
-        }
+        ArgumentNullException.ThrowIfNull(builder);
 
         builder.AddRazorViewEngine();
 
@@ -50,15 +49,8 @@ public static class MvcRazorPagesMvcCoreBuilderExtensions
         this IMvcCoreBuilder builder,
         Action<RazorPagesOptions> setupAction)
     {
-        if (builder == null)
-        {
-            throw new ArgumentNullException(nameof(builder));
-        }
-
-        if (setupAction == null)
-        {
-            throw new ArgumentNullException(nameof(setupAction));
-        }
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(setupAction);
 
         builder.AddRazorViewEngine();
 
@@ -77,10 +69,7 @@ public static class MvcRazorPagesMvcCoreBuilderExtensions
     /// <returns></returns>
     public static IMvcCoreBuilder WithRazorPagesRoot(this IMvcCoreBuilder builder, string rootDirectory)
     {
-        if (builder == null)
-        {
-            throw new ArgumentNullException(nameof(builder));
-        }
+        ArgumentNullException.ThrowIfNull(builder);
 
         if (string.IsNullOrEmpty(rootDirectory))
         {
@@ -107,8 +96,19 @@ public static class MvcRazorPagesMvcCoreBuilderExtensions
         services.TryAddSingleton<PageActionEndpointDataSourceIdProvider>();
 
         // Action description and invocation
-        services.TryAddEnumerable(
-            ServiceDescriptor.Singleton<IActionDescriptorProvider, CompiledPageActionDescriptorProvider>());
+        var actionDescriptorProvider = services.FirstOrDefault(f =>
+            f.ServiceType == typeof(IActionDescriptorProvider) &&
+            f.ImplementationType == typeof(PageActionDescriptorProvider));
+
+        if (actionDescriptorProvider is null)
+        {
+            // RuntimeCompilation registers an instance of PageActionDescriptorProvider (PageADP). CompiledPageADP and runtime compilation
+            // cannot co-exist since CompiledPageADP will attempt to resolve action descriptors for lazily compiled views (such as for
+            // ones from non-physical file providers). We'll instead avoid adding it if PageADP is already registered. Similarly,
+            // AddRazorRuntimeCompilation will remove CompiledPageADP if it is registered.
+            services.TryAddEnumerable(
+                ServiceDescriptor.Singleton<IActionDescriptorProvider, CompiledPageActionDescriptorProvider>());
+        }
         services.TryAddEnumerable(
             ServiceDescriptor.Singleton<IPageRouteModelProvider, CompiledPageRouteModelProvider>());
         services.TryAddSingleton<PageActionEndpointDataSourceFactory>();

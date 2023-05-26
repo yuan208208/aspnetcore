@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Buffers;
 using Microsoft.AspNetCore.JsonPatch;
 using Microsoft.AspNetCore.Mvc;
@@ -18,7 +17,7 @@ namespace Microsoft.Extensions.DependencyInjection;
 /// <summary>
 /// Sets up JSON formatter options for <see cref="MvcOptions"/>.
 /// </summary>
-internal class NewtonsoftJsonMvcOptionsSetup : IConfigureOptions<MvcOptions>
+internal sealed class NewtonsoftJsonMvcOptionsSetup : IConfigureOptions<MvcOptions>
 {
     private readonly ILoggerFactory _loggerFactory;
     private readonly MvcNewtonsoftJsonOptions _jsonOptions;
@@ -31,25 +30,10 @@ internal class NewtonsoftJsonMvcOptionsSetup : IConfigureOptions<MvcOptions>
         ArrayPool<char> charPool,
         ObjectPoolProvider objectPoolProvider)
     {
-        if (loggerFactory == null)
-        {
-            throw new ArgumentNullException(nameof(loggerFactory));
-        }
-
-        if (jsonOptions == null)
-        {
-            throw new ArgumentNullException(nameof(jsonOptions));
-        }
-
-        if (charPool == null)
-        {
-            throw new ArgumentNullException(nameof(charPool));
-        }
-
-        if (objectPoolProvider == null)
-        {
-            throw new ArgumentNullException(nameof(objectPoolProvider));
-        }
+        ArgumentNullException.ThrowIfNull(loggerFactory);
+        ArgumentNullException.ThrowIfNull(jsonOptions);
+        ArgumentNullException.ThrowIfNull(charPool);
+        ArgumentNullException.ThrowIfNull(objectPoolProvider);
 
         _loggerFactory = loggerFactory;
         _jsonOptions = jsonOptions.Value;

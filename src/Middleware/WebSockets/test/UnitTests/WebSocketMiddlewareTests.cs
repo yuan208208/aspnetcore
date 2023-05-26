@@ -1,16 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Net;
 using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Testing;
 using Microsoft.Net.Http.Headers;
-using Xunit;
 
 namespace Microsoft.AspNetCore.WebSockets.Test;
 
@@ -583,8 +580,8 @@ public class WebSocketMiddlewareTests : LoggedTest
             Assert.True(context.WebSockets.IsWebSocketRequest);
             var webSocket = await context.WebSockets.AcceptWebSocketAsync();
 
-                // Use ReferenceEquals and test against the constants
-                Assert.Same(HeaderNames.Upgrade, context.Request.Headers.Connection.ToString());
+            // Use ReferenceEquals and test against the constants
+            Assert.Same(HeaderNames.Upgrade, context.Request.Headers.Connection.ToString());
             Assert.Same(Constants.Headers.UpgradeWebSocket, context.Request.Headers.Upgrade.ToString());
             Assert.Same(Constants.Headers.SupportedVersion, context.Request.Headers.SecWebSocketVersion.ToString());
         }))
@@ -629,6 +626,40 @@ public class WebSocketMiddlewareTests : LoggedTest
                     Assert.Equal(HttpStatusCode.SwitchingProtocols, response.StatusCode);
                 }
             }
+        }
+    }
+
+    [Fact]
+    public async Task AcceptingWebSocketRequestDisablesTimeout()
+    {
+        await using (var server = KestrelWebSocketHelpers.CreateServer(LoggerFactory, out var port, async context =>
+        {
+            context.Features.Set<IHttpRequestTimeoutFeature>(new HttpRequestTimeoutFeature());
+            Assert.True(context.WebSockets.IsWebSocketRequest);
+            var feature = Assert.IsType<HttpRequestTimeoutFeature>(context.Features.Get<IHttpRequestTimeoutFeature>());
+            Assert.True(feature.Enabled);
+
+            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+
+            Assert.False(feature.Enabled);
+        }))
+        {
+            using (var client = new ClientWebSocket())
+            {
+                await client.ConnectAsync(new Uri($"ws://127.0.0.1:{port}/"), CancellationToken.None);
+            }
+        }
+    }
+
+    internal sealed class HttpRequestTimeoutFeature : IHttpRequestTimeoutFeature
+    {
+        public bool Enabled { get; private set; } = true;
+
+        public CancellationToken RequestTimeoutToken => new CancellationToken();
+
+        public void DisableTimeout()
+        {
+            Enabled = false;
         }
     }
 }

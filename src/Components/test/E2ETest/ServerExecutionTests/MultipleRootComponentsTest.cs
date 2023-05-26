@@ -1,17 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Components.E2ETest.Infrastructure;
 using Microsoft.AspNetCore.Components.E2ETest.Infrastructure.ServerFixtures;
 using Microsoft.AspNetCore.E2ETesting;
 using OpenQA.Selenium;
 using TestServer;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace Microsoft.AspNetCore.Components.E2ETest.ServerExecutionTests;
@@ -80,19 +76,26 @@ public class MultipleComponentsTest : ServerTestBase<BasicTestAppServerSiteFixtu
         var expectedComponentSequence = new bool[]
         {
                 // true means it was a prerendered component.
-                true,
-                false,
-                false,
-                false,
-                true,
-                false,
-                true,
-                false,
-                true,
-                false,
-                true,
-                false,
-                true,
+
+                // Layout
+                false, // Server
+                true, // ServerPrerendered
+
+                // Body
+                true, // ServerPrerendered
+                false, // Server
+                false, // Server
+
+                false, // Server
+                true, // ServerPrerendered
+                false, // Server
+                true, // ServerPrerendered
+                false, // Server
+                true, // ServerPrerendered
+
+                // Layout
+                false, // Server
+                true, // ServerPrerendered
         };
         Assert.Equal(expectedComponentSequence, componentSequence);
 

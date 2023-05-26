@@ -31,41 +31,51 @@ internal sealed partial class EndpointMiddleware
     public Task Invoke(HttpContext httpContext)
     {
         var endpoint = httpContext.GetEndpoint();
-        if (endpoint?.RequestDelegate != null)
+        if (endpoint is not null)
         {
+            // This check should be kept in sync with the one in EndpointRoutingMiddleware
             if (!_routeOptions.SuppressCheckForUnhandledSecurityMetadata)
             {
-                if (endpoint.Metadata.GetMetadata<IAuthorizeData>() != null &&
+                if (endpoint.Metadata.GetMetadata<IAuthorizeData>() is not null &&
                     !httpContext.Items.ContainsKey(AuthorizationMiddlewareInvokedKey))
                 {
                     ThrowMissingAuthMiddlewareException(endpoint);
                 }
 
-                if (endpoint.Metadata.GetMetadata<ICorsMetadata>() != null &&
+                if (endpoint.Metadata.GetMetadata<ICorsMetadata>() is not null &&
                     !httpContext.Items.ContainsKey(CorsMiddlewareInvokedKey))
                 {
                     ThrowMissingCorsMiddlewareException(endpoint);
                 }
             }
 
-            Log.ExecutingEndpoint(_logger, endpoint);
-
-            try
+            if (endpoint.RequestDelegate is not null)
             {
-                var requestTask = endpoint.RequestDelegate(httpContext);
-                if (!requestTask.IsCompletedSuccessfully)
+                if (!_logger.IsEnabled(LogLevel.Information))
                 {
-                    return AwaitRequestTask(endpoint, requestTask, _logger);
+                    // Avoid the AwaitRequestTask state machine allocation if logging is disabled.
+                    return endpoint.RequestDelegate(httpContext);
                 }
-            }
-            catch (Exception exception)
-            {
-                Log.ExecutedEndpoint(_logger, endpoint);
-                return Task.FromException(exception);
-            }
 
-            Log.ExecutedEndpoint(_logger, endpoint);
-            return Task.CompletedTask;
+                Log.ExecutingEndpoint(_logger, endpoint);
+
+                try
+                {
+                    var requestTask = endpoint.RequestDelegate(httpContext);
+                    if (!requestTask.IsCompletedSuccessfully)
+                    {
+                        return AwaitRequestTask(endpoint, requestTask, _logger);
+                    }
+                }
+                catch
+                {
+                    Log.ExecutedEndpoint(_logger, endpoint);
+                    throw;
+                }
+
+                Log.ExecutedEndpoint(_logger, endpoint);
+                return Task.CompletedTask;
+            }
         }
 
         return _next(httpContext);

@@ -10,6 +10,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using StackExchange.Redis;
+using StackExchange.Redis.Maintenance;
 using StackExchange.Redis.Profiling;
 
 namespace Microsoft.AspNetCore.SignalR.Tests;
@@ -76,6 +77,12 @@ public class TestConnectionMultiplexer : IConnectionMultiplexer
     }
 
     private readonly TestRedisServer _server;
+
+    public event EventHandler<ServerMaintenanceEvent> ServerMaintenanceEvent
+    {
+        add { }
+        remove { }
+    }
 
     public TestConnectionMultiplexer(TestRedisServer server)
     {
@@ -221,6 +228,13 @@ public class TestConnectionMultiplexer : IConnectionMultiplexer
     {
         throw new NotImplementedException();
     }
+
+    public IServer[] GetServers()
+    {
+        throw new NotImplementedException();
+    }
+
+    public ValueTask DisposeAsync() => default;
 }
 
 public class TestRedisServer
@@ -232,9 +246,12 @@ public class TestRedisServer
     {
         if (_subscriptions.TryGetValue(channel, out var handlers))
         {
-            foreach (var (_, handler) in handlers)
+            lock (handlers)
             {
-                handler(channel, message);
+                foreach (var (_, handler) in handlers)
+                {
+                    handler(channel, message);
+                }
             }
         }
 
@@ -245,15 +262,18 @@ public class TestRedisServer
     {
         Action<RedisChannel, RedisValue> handler = (channel, value) =>
         {
-                // Workaround for https://github.com/StackExchange/StackExchange.Redis/issues/969
-                // ChannelMessageQueue isn't mockable currently, this works around that by using private reflection
-                typeof(ChannelMessageQueue).GetMethod("Write", BindingFlags.NonPublic | BindingFlags.Instance)
-                .Invoke(messageQueue, new object[] { channel, value });
+            // Workaround for https://github.com/StackExchange/StackExchange.Redis/issues/969
+            // ChannelMessageQueue isn't mockable currently, this works around that by using private reflection
+            typeof(ChannelMessageQueue).GetMethod("Write", BindingFlags.NonPublic | BindingFlags.Instance)
+            .Invoke(messageQueue, new object[] { channel, value });
         };
 
         _subscriptions.AddOrUpdate(messageQueue.Channel, _ => new List<(int, Action<RedisChannel, RedisValue>)> { (subscriberId, handler) }, (_, list) =>
         {
-            list.Add((subscriberId, handler));
+            lock (list)
+            {
+                list.Add((subscriberId, handler));
+            }
             return list;
         });
     }
@@ -262,7 +282,10 @@ public class TestRedisServer
     {
         if (_subscriptions.TryGetValue(channel, out var list))
         {
-            list.RemoveAll((item) => item.Item1 == subscriberId);
+            lock (list)
+            {
+                list.RemoveAll((item) => item.Item1 == subscriberId);
+            }
         }
     }
 }

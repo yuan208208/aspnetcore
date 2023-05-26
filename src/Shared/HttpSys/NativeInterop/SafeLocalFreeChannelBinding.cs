@@ -6,7 +6,7 @@ using System.Security.Authentication.ExtendedProtection;
 
 namespace Microsoft.AspNetCore.HttpSys.Internal;
 
-internal class SafeLocalFreeChannelBinding : ChannelBinding
+internal sealed class SafeLocalFreeChannelBinding : ChannelBinding
 {
     private const int LMEM_FIXED = 0;
     private int size;
@@ -24,7 +24,9 @@ internal class SafeLocalFreeChannelBinding : ChannelBinding
         if (result.IsInvalid)
         {
             result.SetHandleAsInvalid();
+#pragma warning disable CA2201 // Do not raise reserved exception types
             throw new OutOfMemoryException();
+#pragma warning restore CA2201
         }
 
         result.size = cb;

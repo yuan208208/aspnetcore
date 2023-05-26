@@ -22,7 +22,6 @@ using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Microsoft.AspNetCore.Server.Kestrel.FunctionalTests;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.AspNetCore.Server.Kestrel.Https.Internal;
-using Microsoft.AspNetCore.Server.Kestrel.Tests;
 using Microsoft.AspNetCore.Testing;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -769,8 +768,8 @@ public class ResponseTests : TestApplicationErrorLoggerLoggedTest
         };
 
         testContext.InitializeHeartbeat();
-        var dateHeaderValueManager = new DateHeaderValueManager();
-        dateHeaderValueManager.OnHeartbeat(DateTimeOffset.MinValue);
+        var dateHeaderValueManager = new DateHeaderValueManager(TimeProvider.System);
+        dateHeaderValueManager.OnHeartbeat();
         testContext.DateHeaderValueManager = dateHeaderValueManager;
 
         var listenOptions = new ListenOptions(new IPEndPoint(IPAddress.Loopback, 0));
@@ -846,8 +845,8 @@ public class ResponseTests : TestApplicationErrorLoggerLoggedTest
         };
 
         testContext.InitializeHeartbeat();
-        var dateHeaderValueManager = new DateHeaderValueManager();
-        dateHeaderValueManager.OnHeartbeat(DateTimeOffset.MinValue);
+        var dateHeaderValueManager = new DateHeaderValueManager(TimeProvider.System);
+        dateHeaderValueManager.OnHeartbeat();
         testContext.DateHeaderValueManager = dateHeaderValueManager;
 
         var listenOptions = new ListenOptions(new IPEndPoint(IPAddress.Loopback, 0));
@@ -930,8 +929,8 @@ public class ResponseTests : TestApplicationErrorLoggerLoggedTest
         };
 
         testContext.InitializeHeartbeat();
-        var dateHeaderValueManager = new DateHeaderValueManager();
-        dateHeaderValueManager.OnHeartbeat(DateTimeOffset.MinValue);
+        var dateHeaderValueManager = new DateHeaderValueManager(TimeProvider.System);
+        dateHeaderValueManager.OnHeartbeat();
         testContext.DateHeaderValueManager = dateHeaderValueManager;
 
         var listenOptions = new ListenOptions(new IPEndPoint(IPAddress.Loopback, 0));

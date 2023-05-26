@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -106,6 +105,9 @@ public static class CertificateLoader
 
     internal static bool DoesCertificateHaveAnAccessiblePrivateKey(X509Certificate2 certificate)
         => certificate.HasPrivateKey;
+
+    internal static bool DoesCertificateHaveASubjectAlternativeName(X509Certificate2 certificate)
+        => certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().Any();
 
     private static void DisposeCertificates(X509Certificate2Collection? certificates, X509Certificate2? except)
     {

@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing.Matching;
 
@@ -19,10 +17,7 @@ public class CompositeRouteConstraint : IRouteConstraint, IParameterLiteralNodeM
     /// <param name="constraints">The child constraints that must match for this constraint to match.</param>
     public CompositeRouteConstraint(IEnumerable<IRouteConstraint> constraints)
     {
-        if (constraints == null)
-        {
-            throw new ArgumentNullException(nameof(constraints));
-        }
+        ArgumentNullException.ThrowIfNull(constraints);
 
         Constraints = constraints;
     }
@@ -40,15 +35,8 @@ public class CompositeRouteConstraint : IRouteConstraint, IParameterLiteralNodeM
         RouteValueDictionary values,
         RouteDirection routeDirection)
     {
-        if (routeKey == null)
-        {
-            throw new ArgumentNullException(nameof(routeKey));
-        }
-
-        if (values == null)
-        {
-            throw new ArgumentNullException(nameof(values));
-        }
+        ArgumentNullException.ThrowIfNull(routeKey);
+        ArgumentNullException.ThrowIfNull(values);
 
         foreach (var constraint in Constraints)
         {
